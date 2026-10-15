@@ -109,9 +109,15 @@ sunox clip wait <clip_id_1> <clip_id_2>
 sunox download <clip_id_1> <clip_id_2> --output ./songs
 ```
 
-不指定格式时，Sunox 会通过 Suno 官方 prepared-download 接口下载 MP3，并把普通歌词和
-时间轴歌词写入 ID3。用 `--format mp3|m4a|wav` 选择其他格式；WAV 优先走 prepared，明确不可用时才读取旧转换结果，缺失时可发起服务端转换。Suno 已停用 OPUS，`--format opus` 会在账户请求前拒绝。传 `--no-convert` 可禁止这个 POST；下载视频使用
-`--video`。prepared download 即使是 GET，也可能计入套餐下载额度。
+默认下载会复用歌曲视频，缺失/过期时生成视频，再无重编码提取原始音轨为 M4A。
+音频提取需要 FFmpeg 和 FFprobe；`--video` 保存原始 MP4，`--read-only` 禁止创建新视频。
+已有视频任务会续等，状态查询失败或视频下载失败都不会转去消耗额度的官方路径。
+
+只有显式指定 `--source official` 才走官方 prepared-download 导出，可用
+`--format mp3|m4a|wav` 选择音频格式；官方默认 MP3 会写入普通歌词和时间轴歌词 ID3。
+WAV 优先 prepared，明确不可用时才读取旧转换结果；缺失转换可用 `--no-convert` 禁止 POST。
+Suno 已停用 OPUS，`--format opus` 会在账户请求前拒绝。官方导出即使是 GET，也可能计入
+套餐下载额度。已有分轨导出和 ZIP 导出仍是独立的官方导出功能，也可能消耗额度。
 
 下载内容必须非空且通过基本媒体容器检查，才会替换目标文件。HTTP 200 错误页或截断的文件头
 会导致下载失败，即使使用 `--force` 也会保留原文件。Opus 会检查全部 Ogg 页，并要求完整的
