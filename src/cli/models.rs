@@ -20,10 +20,23 @@ pub struct CustomModelsArgs {
 
 #[derive(Subcommand)]
 pub enum CustomModelCommand {
+    /// Discover the current account's training bases
+    Bases,
+    /// List models shared with the account
+    Shared {
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Rename an owned Custom Model
+    Rename {
+        id: String,
+        #[arg(long)]
+        name: String,
+    },
     /// Show models that are still training
     Pending,
 
-    /// Train after explicitly confirming the current account's Web UI exposes training
+    /// Train using current account gates and advertised base models
     Train(CustomModelTrainArgs),
 
     /// Archive a Custom Model
@@ -41,9 +54,13 @@ pub struct CustomModelTrainArgs {
     #[arg(long)]
     pub confirm_rights: bool,
 
-    /// Attest that the current Suno Web account visibly exposes training; server stays authoritative
-    #[arg(long)]
+    /// Legacy compatibility flag; live session gates are always authoritative
+    #[arg(long, hide = true)]
     pub confirm_ui_available: bool,
+
+    /// Training base external key or unambiguous advertised name
+    #[arg(long)]
+    pub base_model: Option<String>,
 
     /// 6-100 distinct Suno clip IDs (Artist accounts can use Web for up to 200)
     #[arg(value_name = "CLIP_ID", num_args = 6..=100)]

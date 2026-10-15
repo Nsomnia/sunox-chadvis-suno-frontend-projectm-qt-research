@@ -2,6 +2,7 @@
 
 pub mod download;
 pub mod tags;
+pub mod video;
 
 pub use download::{download_clip_url, stage_clip_url};
 pub use tags::embed_lyrics_in_mp3;

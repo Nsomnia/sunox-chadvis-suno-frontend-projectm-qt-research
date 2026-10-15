@@ -25,8 +25,8 @@ English · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) ·
 - Cover, extend, concatenate, remaster, reverse, crop, fade, change speed, or split stems.
 - Read/download existing stem banks, manage lyrics projects and Custom Models, and create private
   verified Voices from local recordings.
-- Generate and apply a prompt image, and inspect existing per-clip video status; legacy video submit
-  remains fail-closed until clip eligibility is provable.
+- Generate and apply a prompt image, generate eligible per-song videos, and inspect or resume
+  existing video jobs without resubmission.
 - Manage playlists and personas, and upload local audio or cover images.
 - Use table output in a terminal or stable JSON envelopes in scripts and coding agents.
 
@@ -117,7 +117,36 @@ sunox clip wait <clip_id_1> <clip_id_2>
 sunox download <clip_id_1> <clip_id_2> --output ./songs
 ```
 
-The default download uses Suno's prepared MP3 endpoint. Sunox writes available plain and timed
+To use an unencrypted audio URL already returned by Suno without requesting export authorization:
+
+```bash
+sunox download <clip_id> --source cdn --read-only --output ./songs
+```
+
+CDN mode selects the available M4A or MP3 as-is; an explicit `--format` must already be available.
+It never calls download authorization, preparation, conversion, or timed-lyrics generation, and
+never falls back to official export. Encrypted media (`media_urls[].encoding`), unavailable formats,
+and missing URLs fail before transfer. This is not an unlimited-download guarantee: current accounts
+can return only encrypted playback media. `playback_url` also excludes these encrypted URLs.
+
+Downloads default to the song-video source (M4A audio):
+
+```bash
+sunox download <clip_id> --source video --read-only --output ./songs
+sunox download <clip_id> --video-timeout 180 --output ./songs
+sunox download <clip_id> --source video --video --read-only --output ./videos
+```
+
+Video mode checks local dependencies first (FFprobe; also FFmpeg for audio), reuses the exact
+current video URL and preserves its original audio in M4A without re-encoding. Missing/stale videos are generated automatically unless `--read-only` is set.
+`--generate-video` remains a compatibility flag; `--video-timeout` bounds rendering. No export authorization or
+fallback to official download occurs. JSON reports source/output codec, bitrate, sample rate,
+channels and video dimensions where available. If clip metadata lags, the status URL is reused;
+running video jobs are polled before any new render, including on retry after a timeout.
+Status lookup errors never trigger rendering. Partial failures preserve generated clip IDs.
+See [quality limits and implementation decisions](VIDEO_DOWNLOAD.md).
+
+Only an explicit `--source official` download uses Suno's prepared MP3 endpoint. Sunox writes available plain and timed
 lyrics into the file's ID3 tags. Before fetching any file, Sunox requires the source clip's
 `is_download_unlocked` field to be exactly `true`; otherwise it submits the current one-shot
 `POST /api/download/authorize` request for that source. MP3, M4A, WAV, and `--video` then prefer
@@ -172,7 +201,7 @@ sunox clip stems <id> --mode split --stem vocals
 sunox clip get-stems <id>         Read existing stem-result banks without extracting
 sunox clip generate-image <id> --prompt "..."
                                     Generate and apply a cover image
-sunox clip generate-video <id>    Validate legacy video eligibility (submit currently fail-closed)
+sunox clip generate-video <id>    Generate a song video and wait for its URL
 sunox clip video-status <id>      Inspect an existing video job
 sunox clip cover-art models       List current image/video categories and durations
 sunox clip cover-art image <id> --prompt "..."
@@ -315,9 +344,9 @@ model supports the matching `underpaint`/`overpaint` condition. These operations
 credits; server-side eligibility and charging remain authoritative.
 
 Custom Model training requires at least six distinct source clip IDs, `--confirm-rights`, the live
-`custom_models` account entitlement, and `--confirm-ui-available` after visibly confirming that the
-current Suno Web account exposes the training UI. Without that UI attestation the CLI sends no
-training POST. The current Web UI displays a 100-credit cost, while server eligibility and charging
+`custom_models` account entitlement, an enabled live `custom-model-ui` session gate and an
+exact usable base from `models custom bases`. `--base-model` selects a specific base; otherwise
+the current advertised default is used. A legacy UI attestation cannot override a disabled gate. The current Web UI displays a 100-credit cost, while server eligibility and charging
 remain authoritative. Pending inspection, exact-ID archive, and ready-model selection are also
 available. Ready Custom Models appear in `sunox models` and are selectable with `create --model`;
 archive is not described as permanent deletion or recoverable.
@@ -327,10 +356,10 @@ The separate `clip cover-art` namespace implements the current multi-result `SON
 image/video workflow with dynamic model/duration discovery, cost preflight, pending/history recovery,
 bounded polling, and explicit apply commands. Generation never auto-applies the first result. Both
 paths require exact authenticated ownership, non-trashed state, and an enabled `generate_cover_art`
-action. The legacy per-clip
-video POST/status routes are separate and known, but their exact ownership/download-eligibility seam is not;
-`clip generate-video` therefore fails closed before POST. `clip video-status` remains a bounded,
-read-only status check.
+action. The separate `clip generate-video` flow requires the `generate_song_video` entitlement,
+exact ownership, completed/non-trashed state and current download eligibility, submits once without
+a body, then polls until a usable video URL is returned. It does not authorize or download the video.
+`clip video-status` remains a bounded, read-only status/recovery check; an uncertain submit must not be replayed.
 
 ## Generation challenges
 
@@ -529,10 +558,12 @@ not credentials or prompts, and do not provide automatic resume. Successful comm
 operation checkpoint.
 
 Pass global `--read-only` to reject account writes before the first write request. Read-only mode
-still allows account reads, but a download is allowed only when its source already reports
+still allows account reads. An official download is allowed only when its source already reports
 `is_download_unlocked == true`; it never calls `/api/download/authorize`. It also prevents
 timed-lyrics augmentation and missing WAV conversion while continuing to return an already
-existing alignment or converted file when available after the source-unlock gate.
+existing alignment or converted file when available after the source-unlock gate. Explicit
+`--source cdn` instead reads only an available unencrypted URL and never performs these writes.
+`--source video` can also reuse existing video in read-only mode; missing/stale videos are automatically generated unless --read-only is set.
 
 ## Limits and safety
 
@@ -543,10 +574,10 @@ Some commands create paid resources or change remote state. Sunox keeps created 
 and personas private unless a command explicitly requests public visibility. Destructive commands
 require `-y` or `--yes`.
 
-[Suno has announced](https://about.suno.com/blog/suno-updates-tos) that on September 3, 2026, Pro
-accounts will be limited to 20 downloads per month (Premier: 60; Premier Studio exports are
-excluded). Sunox uses the official prepared-download
-workflow and does not attempt to bypass plan accounting. The CLI reports only limits returned by
+[Suno documents](https://help.suno.com/en/articles/13614785) download limits of 20 songs per
+month for Pro and 60 for Premier since September 3, 2026; repeat downloads and formats of the same
+song share one unlock. Only explicit `--source official` follows that authorization workflow. Explicit CDN
+mode can save only returned, unencrypted audio; protected resources remain unavailable. The CLI reports only limits returned by
 the live billing response: period limit, period usage, additional remaining downloads, and the
 available download-credit pack metadata when present. Runtime authorization never hard-codes the
 announced plan quotas or guesses remaining download allowance.
@@ -564,3 +595,43 @@ Create changes on a feature branch and open a pull request against `main`.
 ## License
 
 [MIT](LICENSE)
+
+
+## Speech, Agentic Simple, Sounds and Albums
+
+```sh
+sunox models custom bases --json
+sunox models custom train --name "My Sound" --confirm-rights --base-model chirp-hawk CLIP_1 CLIP_2 CLIP_3 CLIP_4 CLIP_5 CLIP_6
+sunox models custom shared --json
+sunox models custom rename MODEL_ID --name "New Sound"
+sunox speech --script "Good evening, and welcome." --tone "Warm storyteller over soft piano"
+sunox speech --describe "A short bedtime story with gentle music"
+sunox simple "Build a soft acoustic arrangement around this reference" --audio-ref CLIP_ID
+sunox simple "Make music for this scene" --image-file scene.png
+sunox sounds "A warm plucked bass loop" --loop --bpm 100 --key "C minor"
+sunox album list --json
+sunox album create --name "My Album" --type lp --from-playlist PLAYLIST_ID
+sunox album set ALBUM_ID --description "An evening collection"
+sunox album add ALBUM_ID CLIP_ID
+sunox album publish ALBUM_ID
+sunox download-zip CLIP_1 CLIP_2 --format m4a --output ./songs
+```
+
+Read `capabilities` immediately before model-sensitive work. New creation modes enforce current
+session gates and account limits, return submission results, and use the existing serial lock,
+Browser Bridge and mutation recovery. Use `clip wait` before downloading their results. Speech
+Script supports tone, gender, background music and Variety; Speech Describe uses its own request
+shape. The older `create` description path is preserved. Agentic Simple currently supports audio,
+images and text attachments (image preparation has a combined local 64 MiB memory limit); video/MIDI attachment upload flows remain unverified.
+
+Albums are created as private drafts. Publication is a separate explicit command and can publish
+tracks and notify followers. Custom Model training reads current bases and the live UI gate;
+`--confirm-rights` remains required. Shared-model discovery and owned-model rename are supported;
+shared-model generation and permission-grant writes remain unverified.
+
+ZIP results preserve `substituted_clips` and warn when Suno substitutes a format (for example,
+MP3 instead of M4A). ZIP supports M4A/MP3 and preserves `failed_clips` when only a subset is
+available. It submits one preparation request with a batch ID, without individually authorizing
+songs first. Preparation can consume download allowance; writes are never
+blindly retried, archive structure is validated before atomic commit, and existing local files
+require `--force` to replace. ZIP preparation is blocked by `--read-only`.

@@ -107,9 +107,10 @@ sunox clip wait <clip_id_1> <clip_id_2>
 sunox download <clip_id_1> <clip_id_2> --output ./songs
 ```
 
-形式を指定しない場合は既存の CDN MP3 を取得し、利用可能な通常歌詞と同期歌詞を ID3 に
-書き込みます。Suno の形式変換が必要なときだけ `--format mp3|m4a|wav` を、動画には
-`--video` を指定してください。
+デフォルトでは動画を再利用し、なければ生成して元の音声を再エンコードせず M4A に抽出します。
+`--read-only` は動画生成を禁止し、`--video` は MP4 を保存します。音声抽出には FFprobe と FFmpeg が必要です。
+ダウンロード枠を消費する可能性のある MP3/M4A/WAV 出力は、明示的な `--source official` が必要です。
+この経路へ自動的に切り替わることはありません。
 
 ## よく使うコマンド
 
@@ -323,3 +324,10 @@ cargo test --locked
 ## ライセンス
 
 [MIT](LICENSE)
+
+
+## 新しいワークフロー
+
+Speech (`speech`), Agentic Simple (`simple`), Sounds (`sounds`), Albums (`album`),
+Custom Model bases/shared discovery and rename, and batch ZIP (`download-zip`) are available.
+See the [workflow examples and verification boundaries in the main README](README.md#speech-agentic-simple-sounds-and-albums).

@@ -18,6 +18,8 @@ pub struct ImageUploadResult {
 
 // Local memory safety limit, not a claim about Suno's upload allowance.
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+// Current Web image attachments validate a 10 MiB limit before initiation.
+const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
 
 pub struct PreparedImage {
     extension: String,
@@ -25,10 +27,56 @@ pub struct PreparedImage {
     bytes: Vec<u8>,
 }
 
+impl PreparedImage {
+    pub(crate) fn byte_len(&self) -> usize {
+        self.bytes.len()
+    }
+}
+
 pub async fn prepare(file: &Path) -> Result<PreparedImage, CliError> {
+    let extension = image_extension(file)?;
+    prepare_with_limit(file, extension, MAX_IMAGE_BYTES).await
+}
+
+pub(crate) async fn prepare_attachment(file: &Path) -> Result<PreparedImage, CliError> {
+    let extension = file
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .filter(|extension| matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp"))
+        .ok_or_else(|| {
+            CliError::Config("image attachments must be png, jpg, jpeg, webp, or bmp".into())
+        })?;
+    let mut image = prepare_with_limit(file, extension, MAX_ATTACHMENT_BYTES).await?;
+    image.extension = attachment_content_extension(&image.bytes)
+        .ok_or_else(|| {
+            CliError::Config("image attachment contents are not a supported image".into())
+        })?
+        .into();
+    Ok(image)
+}
+
+fn attachment_content_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("jpeg")
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP".as_slice()) {
+        Some("webp")
+    } else if bytes.starts_with(b"BM") {
+        Some("bmp")
+    } else {
+        None
+    }
+}
+
+async fn prepare_with_limit(
+    file: &Path,
+    extension: String,
+    max_bytes: u64,
+) -> Result<PreparedImage, CliError> {
     use tokio::io::AsyncReadExt;
 
-    let extension = image_extension(file)?;
     let filename = upload_filename(file)?;
     let metadata = tokio::fs::metadata(file).await?;
     if !metadata.is_file() {
@@ -42,19 +90,16 @@ pub async fn prepare(file: &Path) -> Result<PreparedImage, CliError> {
     options.custom_flags(libc::O_NONBLOCK);
     let source = options.open(file).await?;
     let metadata = source.metadata().await?;
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_IMAGE_BYTES {
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max_bytes {
         return Err(CliError::Config(format!(
-            "image upload must be a nonempty regular file within the CLI's local {MAX_IMAGE_BYTES}-byte safety limit"
+            "image upload must be a nonempty regular file within the {max_bytes}-byte limit"
         )));
     }
     let mut bytes = Vec::new();
-    source
-        .take(MAX_IMAGE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .await?;
-    if bytes.is_empty() || bytes.len() as u64 > MAX_IMAGE_BYTES {
+    source.take(max_bytes + 1).read_to_end(&mut bytes).await?;
+    if bytes.is_empty() || bytes.len() as u64 > max_bytes {
         return Err(CliError::Config(format!(
-            "image upload must be nonempty and within the CLI's local {MAX_IMAGE_BYTES}-byte safety limit"
+            "image upload must be nonempty and within the {max_bytes}-byte limit"
         )));
     }
     Ok(PreparedImage {
@@ -296,5 +341,46 @@ mod tests {
         fields.insert("content-type".to_string(), "image/png".to_string());
 
         assert_eq!(upload_content_type(&fields), Some("image/png"));
+    }
+
+    #[tokio::test]
+    async fn image_attachment_derives_upload_type_from_contents_and_accepts_bmp() {
+        let directory = tempfile::tempdir().unwrap();
+        for (name, bytes, expected) in [
+            ("renamed.jpg", b"\x89PNG\r\n\x1a\n".as_slice(), "png"),
+            ("photo.jpg", b"\xff\xd8\xff".as_slice(), "jpeg"),
+            ("picture.bmp", b"BM".as_slice(), "bmp"),
+            ("picture.webp", b"RIFF1234WEBP".as_slice(), "webp"),
+        ] {
+            let path = directory.path().join(name);
+            tokio::fs::write(&path, bytes).await.unwrap();
+            let prepared = super::prepare_attachment(&path).await.unwrap();
+            assert_eq!(prepared.extension, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn image_attachment_rejects_renamed_text_and_oversize_before_upload() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("image.png");
+        tokio::fs::write(&path, b"not an image").await.unwrap();
+        assert!(
+            super::prepare_attachment(&path)
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("contents")
+        );
+        let file = tokio::fs::File::create(&path).await.unwrap();
+        file.set_len(super::MAX_ATTACHMENT_BYTES + 1).await.unwrap();
+        assert!(
+            super::prepare_attachment(&path)
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("10485760-byte")
+        );
     }
 }

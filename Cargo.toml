@@ -1,6 +1,6 @@
 [package]
 name = "sunox"
-version = "0.3.4"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Generate AI music from your terminal via direct Suno web workflows"
@@ -41,13 +41,13 @@ sha2_10 = { package = "sha2", version = "0.10" }
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 self-replace = "1.5"
+zip = { version = "8", default-features = false }
 self_update = { version = "1.0.0-rc.3", default-features = false, features = ["ureq", "rustls", "progress-bar", "github", "checksums", "compression-tar-gz", "compression-zip-deflate"] }
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 
 [target.'cfg(windows)'.dependencies]
 reqwest = { version = "0.12", features = ["system-proxy"], default-features = false }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
-zip = { version = "8", default-features = false }
 
 [target.'cfg(not(windows))'.dependencies]
 flate2 = "1"

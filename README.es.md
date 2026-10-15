@@ -112,9 +112,10 @@ sunox clip wait <clip_id_1> <clip_id_2>
 sunox download <clip_id_1> <clip_id_2> --output ./songs
 ```
 
-Sin indicar un formato, Sunox descarga el MP3 ya disponible en el CDN e incorpora las letras
-normales y sincronizadas en las etiquetas ID3 cuando existen. Usa `--format mp3|m4a|wav`
-solo si necesitas la conversión de Suno, o `--video` para descargar un vídeo disponible.
+Por defecto, Sunox reutiliza o genera el vídeo y extrae el audio original en M4A sin recodificar.
+`--read-only` impide generar vídeos; `--video` guarda el MP4. Se requieren FFprobe y FFmpeg para
+extraer audio. Solo `--source official` permite exportaciones MP3/M4A/WAV que pueden consumir
+la cuota de descargas. Nunca se cambia automáticamente a esa fuente.
 
 ## Comandos habituales
 
@@ -326,3 +327,10 @@ Crea una rama desde `main` y abre una Pull Request para proponer cambios.
 ## Licencia
 
 [MIT](LICENSE)
+
+
+## Nuevos flujos
+
+Speech (`speech`), Agentic Simple (`simple`), Sounds (`sounds`), Albums (`album`),
+Custom Model bases/shared discovery and rename, and batch ZIP (`download-zip`) are available.
+See the [workflow examples and verification boundaries in the main README](README.md#speech-agentic-simple-sounds-and-albums).

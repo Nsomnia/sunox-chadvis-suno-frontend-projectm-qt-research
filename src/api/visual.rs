@@ -585,15 +585,24 @@ impl SunoClient {
         &self,
         clip_id: &str,
     ) -> Result<VideoGenerationStatus, CliError> {
+        self.inspect_video_generation_status(clip_id)
+            .await?
+            .validate()
+    }
+
+    /// Before submitting, Web may report complete + empty URL for a song without a video.
+    /// Polling after a submit still requires a usable URL on completion.
+    pub(crate) async fn inspect_video_generation_status(
+        &self,
+        clip_id: &str,
+    ) -> Result<VideoGenerationStatus, CliError> {
         let path = format!("/api/video/generate/{clip_id}/status/");
         self.with_auth_retry(|| async {
             let raw: Value = self.read_json_with_transport_retry(self.get(&path)).await?;
-            let status: VideoGenerationStatus =
-                serde_json::from_value(raw).map_err(|error| CliError::Api {
-                    code: "schema_drift",
-                    message: format!("invalid video-generation status response: {error}"),
-                })?;
-            status.validate()
+            serde_json::from_value(raw).map_err(|error| CliError::Api {
+                code: "schema_drift",
+                message: format!("invalid video-generation status response: {error}"),
+            })
         })
         .await
     }

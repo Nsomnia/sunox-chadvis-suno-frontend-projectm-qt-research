@@ -1057,6 +1057,7 @@ fn top_level_download_help_is_user_facing() {
         )
         .stdout(predicate::str::contains("--output"))
         .stdout(predicate::str::contains("--force"))
+        .stdout(predicate::str::contains("[default: video]"))
         .stdout(predicate::str::contains("--format"))
         .stdout(predicate::str::contains("--no-convert"))
         .stdout(predicate::str::contains("--video"));
@@ -1371,6 +1372,24 @@ fn agent_info_reports_current_download_authorization_contract() {
         .as_str()
         .expect("read-only guidance");
 
+    let policy = info["protocol_safety"]["download_policy"].as_str().unwrap();
+    let defaults = download["defaults"].as_str().unwrap();
+    let quality = info["agent_safety"]["download_quality"].as_str().unwrap();
+    assert!(policy.contains("defaults to --source video"));
+    assert!(policy.contains("never authorize or fall back"));
+    assert!(policy.contains("Only explicit --source official"));
+    assert!(policy.contains("get-stems --download"));
+    assert!(policy.contains("download-zip"));
+    assert!(defaults.contains("M4A"));
+    assert!(quality.contains("default --source video"));
+    assert!(!quality.contains("MP3 by default"));
+    assert!(
+        info["protocol_safety"]["read_only"]
+            .as_str()
+            .unwrap()
+            .contains("never create a new render")
+    );
+
     assert!(authorization.contains("is_download_unlocked=true"));
     assert!(authorization.contains("POST /api/download/authorize"));
     assert!(authorization.contains("never blindly replayed"));
@@ -1389,6 +1408,19 @@ fn agent_info_reports_current_download_authorization_contract() {
     assert!(stems.contains("at most once"));
     assert!(read_only.contains("already unlocked source"));
     assert!(read_only.contains("never calls /api/download/authorize"));
+}
+
+#[test]
+fn clip_video_help_reports_connected_generation() {
+    Command::cargo_bin("sunox")
+        .expect("binary")
+        .args(["clip", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Generate a song video after checking account and clip eligibility",
+        ))
+        .stdout(predicate::str::contains("submit is blocked").not());
 }
 
 #[test]
@@ -2037,7 +2069,7 @@ fn cover_art_help_exposes_recovery_and_explicit_apply_commands() {
 }
 
 #[test]
-fn custom_model_training_without_ui_attestation_stops_before_authentication() {
+fn custom_model_training_uses_live_ui_gate_after_authentication() {
     let test_home = isolated_test_home("sunox-custom-model-ui-attestation-test");
     let mut cmd = Command::cargo_bin("sunox").expect("binary");
 
@@ -2059,8 +2091,7 @@ fn custom_model_training_without_ui_attestation_stops_before_authentication() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("--confirm-ui-available"))
-        .stderr(predicate::str::contains("auth_missing").not());
+        .stderr(predicate::str::contains("auth_missing"));
 }
 
 #[test]
@@ -2077,6 +2108,23 @@ fn custom_archive_and_lyrics_project_delete_require_confirmation_before_auth() {
             .failure()
             .stderr(predicate::str::contains("\"code\": \"config_error\""))
             .stderr(predicate::str::contains("requires -y/--yes"))
+            .stderr(predicate::str::contains("auth_missing").not());
+    }
+}
+
+#[test]
+fn speech_and_sounds_reject_incompatible_inputs_before_authentication() {
+    for args in [
+        vec!["speech", "--script", "Hello", "--describe", "Story"],
+        vec!["speech", "--describe", "Story", "--no-music"],
+        vec!["speech", "--script", "Hello", "--variety", "5"],
+        vec!["sounds", "Bass", "--bpm", "120"],
+    ] {
+        Command::cargo_bin("sunox")
+            .unwrap()
+            .args(args)
+            .assert()
+            .failure()
             .stderr(predicate::str::contains("auth_missing").not());
     }
 }

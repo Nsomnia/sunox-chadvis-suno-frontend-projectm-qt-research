@@ -33,14 +33,80 @@ impl Clip {
     /// Return the non-authorizing URL that the current Web player can stream.
     ///
     /// Suno may expose `/api/forbidden` in the legacy top-level `audio_url`
-    /// while providing a progressive M4A in `media_urls`. Direct MP3 media
-    /// URLs are deliberately not selected here: current accounts can receive
-    /// a protected CDN URL that requires the separate download workflow.
+    /// while providing an encoded progressive M4A in `media_urls`. The Web
+    /// player decrypts those separately; native playback must only select
+    /// unencoded media. Direct MP3 media URLs are deliberately not selected
+    /// here because they may require the separate download workflow.
     pub fn playback_url(&self) -> Option<&str> {
         self.audio_url
             .as_deref()
-            .filter(|url| is_usable_audio_url(url))
+            .filter(|url| is_usable_audio_url(url) && !self.is_encoded_media_url(url))
             .or_else(|| self.progressive_m4a_url())
+    }
+
+    /// Select an exact, unencoded URL returned by Suno for a requested format.
+    ///
+    /// This does not authorize a download, prepare a file, rewrite a CDN URL,
+    /// or guarantee CDN access. A protected URL may still return HTTP 403.
+    pub fn direct_audio_url(&self, extension: &str) -> Option<&str> {
+        if !matches!(extension, "mp3" | "m4a") {
+            return None;
+        }
+        self.audio_url
+            .as_deref()
+            .filter(|url| {
+                is_direct_audio_url(url)
+                    && !self.is_encoded_media_url(url)
+                    && reqwest::Url::parse(url).ok().is_some_and(|url| {
+                        url.path()
+                            .rsplit_once('.')
+                            .is_some_and(|(_, actual)| actual.eq_ignore_ascii_case(extension))
+                    })
+            })
+            .or_else(|| {
+                self.extra
+                    .get("media_urls")?
+                    .as_array()?
+                    .iter()
+                    .filter_map(Value::as_object)
+                    .find_map(|media| {
+                        let url = media.get("url")?.as_str()?;
+                        (is_unencoded_media(media)
+                            && !self.is_encoded_media_url(url)
+                            && media.get("delivery")?.as_str()? == "progressive"
+                            && media_extension(media.get("content_type")?.as_str()?)
+                                == Some(extension)
+                            && is_direct_audio_url(url))
+                        .then_some(url)
+                    })
+            })
+    }
+
+    /// Exact unencrypted video URL, only when the clip does not mark it stale.
+    pub fn direct_video_url(&self) -> Option<&str> {
+        if self
+            .metadata
+            .extra
+            .get("video_is_stale")
+            .is_some_and(|value| !matches!(value, Value::Null | Value::Bool(false)))
+        {
+            return None;
+        }
+        self.video_url
+            .as_deref()
+            .filter(|url| is_direct_audio_url(url) && !self.is_encoded_media_url(url))
+    }
+
+    fn is_encoded_media_url(&self, url: &str) -> bool {
+        self.extra
+            .get("media_urls")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items.iter().filter_map(Value::as_object).any(|media| {
+                    media.get("url").and_then(Value::as_str) == Some(url)
+                        && !is_unencoded_media(media)
+                })
+            })
     }
 
     fn progressive_m4a_url(&self) -> Option<&str> {
@@ -55,9 +121,42 @@ impl Clip {
                 let url = media.get("url")?.as_str()?;
                 (delivery.eq_ignore_ascii_case("progressive")
                     && is_m4a_content_type(content_type)
+                    && is_unencoded_media(media)
+                    && !self.is_encoded_media_url(url)
                     && is_usable_audio_url(url))
                 .then_some(url)
             })
+    }
+}
+
+fn is_unencoded_media(media: &serde_json::Map<String, Value>) -> bool {
+    let unencoded = match media.get("encoding") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(encoding)) => encoding.is_empty(),
+        _ => false,
+    };
+    unencoded
+        && matches!(
+            media.get("encrypted"),
+            None | Some(Value::Null) | Some(Value::Bool(false))
+        )
+}
+
+fn is_direct_audio_url(url: &str) -> bool {
+    is_usable_audio_url(url)
+        && reqwest::Url::parse(url).ok().is_some_and(|parsed| {
+            parsed.scheme() == "https"
+                && parsed.host_str().is_some()
+                && parsed.username().is_empty()
+                && parsed.password().is_none()
+        })
+}
+
+fn media_extension(content_type: &str) -> Option<&'static str> {
+    match content_type.trim().to_ascii_lowercase().as_str() {
+        "mp3" | "audio/mpeg" => Some("mp3"),
+        "m4a" | "m4a-opus" | "audio/mp4" => Some("m4a"),
+        _ => None,
     }
 }
 
@@ -71,11 +170,7 @@ fn is_usable_audio_url(url: &str) -> bool {
 }
 
 fn is_m4a_content_type(content_type: &str) -> bool {
-    let content_type = content_type.trim();
-    content_type.eq_ignore_ascii_case("audio/mp4")
-        || content_type
-            .get(..3)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("m4a"))
+    media_extension(content_type) == Some("m4a")
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -131,7 +226,7 @@ pub struct ClipAction {
 
 #[cfg(test)]
 mod tests {
-    use super::Clip;
+    use super::{Clip, Value};
 
     #[test]
     fn current_clip_fields_round_trip_without_an_extra_wrapper() {
@@ -278,5 +373,129 @@ mod tests {
         .expect("clip");
 
         assert_eq!(clip.playback_url(), None);
+    }
+    fn direct_media_clip(audio_url: Option<&str>, media_urls: Value) -> Clip {
+        serde_json::from_value(serde_json::json!({
+            "id": "clip-1", "title": "Song", "status": "complete",
+            "model_name": "chirp-hawk", "created_at": "2026-10-15T00:00:00Z",
+            "audio_url": audio_url, "media_urls": media_urls
+        }))
+        .expect("clip")
+    }
+
+    #[test]
+    fn encoded_progressive_m4a_is_never_native_playback_or_direct_download() {
+        let clip = direct_media_clip(
+            Some("https://studio-api.prod.suno.com/api/forbidden"),
+            serde_json::json!([
+                {"url":"https://cdn.example/clip-1.m4a", "content_type":"m4a-opus", "delivery":"progressive", "encoding":"1.0.0"}
+            ]),
+        );
+        assert_eq!(clip.playback_url(), None);
+        assert_eq!(clip.direct_audio_url("m4a"), None);
+    }
+
+    #[test]
+    fn encoded_top_level_url_does_not_escape_media_encryption_metadata() {
+        let clip = direct_media_clip(
+            Some("https://cdn.example/clip-1.m4a"),
+            serde_json::json!([
+                {"url":"https://cdn.example/clip-1.m4a", "content_type":"m4a-opus", "delivery":"progressive", "encoding":"1.0.0"},
+                {"url":"https://cdn.example/clip-1.m4a", "content_type":"m4a-opus", "delivery":"progressive"}
+            ]),
+        );
+        assert_eq!(clip.playback_url(), None);
+        assert_eq!(clip.direct_audio_url("m4a"), None);
+    }
+
+    #[test]
+    fn direct_download_preserves_exact_signed_url_and_requires_matching_format() {
+        let exact = "https://cdn.example/clip-1.mp3?signature=opaque&expires=123";
+        let clip = direct_media_clip(Some(exact), serde_json::json!([]));
+        assert_eq!(clip.direct_audio_url("mp3"), Some(exact));
+        assert_eq!(clip.direct_audio_url("m4a"), None);
+        assert_eq!(clip.direct_audio_url("wav"), None);
+    }
+
+    #[test]
+    fn direct_download_uses_reported_unencoded_media_content_type() {
+        let clip = direct_media_clip(
+            None,
+            serde_json::json!([
+                {"url":"https://cdn.example/encoded", "content_type":"m4a-opus", "delivery":"progressive", "encoding":"1.0.0"},
+                {"url":"https://cdn.example/plain?signature=opaque", "content_type":"m4a-opus", "delivery":"progressive", "encoding":null}
+            ]),
+        );
+        assert_eq!(
+            clip.direct_audio_url("m4a"),
+            Some("https://cdn.example/plain?signature=opaque")
+        );
+    }
+
+    #[test]
+    fn direct_download_rejects_malformed_encryption_and_transport_metadata() {
+        for encoding in [
+            serde_json::json!(false),
+            serde_json::json!(0),
+            serde_json::json!({}),
+            serde_json::json!("unknown"),
+        ] {
+            let clip = direct_media_clip(
+                None,
+                serde_json::json!([
+                    {"url":"https://cdn.example/clip-1.m4a", "content_type":"m4a-opus", "delivery":"progressive", "encoding":encoding}
+                ]),
+            );
+            assert_eq!(clip.direct_audio_url("m4a"), None);
+            assert_eq!(clip.playback_url(), None);
+        }
+        for url in [
+            "http://cdn.example/clip-1.mp3",
+            "https://user:pass@cdn.example/clip-1.mp3",
+            "file:///tmp/song.mp3",
+            "https://cdn.example/api/forbidden?fake=.mp3",
+        ] {
+            let clip = direct_media_clip(Some(url), serde_json::json!([]));
+            assert_eq!(clip.direct_audio_url("mp3"), None);
+        }
+        for media in [
+            serde_json::json!({"url":"https://cdn.example/clip-1.m4a", "content_type":"m4a-unknown", "delivery":"progressive"}),
+            serde_json::json!({"url":"https://cdn.example/clip-1.m4a", "content_type":"m4a-opus", "delivery":"streaming"}),
+            serde_json::json!({"url":"https://cdn.example/clip-1.m4a", "content_type":"m4a-opus", "delivery":"progressive", "encrypted":true}),
+        ] {
+            let clip = direct_media_clip(None, serde_json::json!([media]));
+            assert_eq!(clip.direct_audio_url("m4a"), None);
+            assert_eq!(clip.playback_url(), None);
+        }
+    }
+    #[test]
+    fn direct_video_rejects_stale_encoded_or_invalid_urls() {
+        let mut clip = direct_media_clip(None, serde_json::json!([]));
+        clip.video_url = Some("https://cdn.example/video.mp4".into());
+        assert_eq!(
+            clip.direct_video_url(),
+            Some("https://cdn.example/video.mp4")
+        );
+        for stale in [serde_json::json!(true), serde_json::json!("unknown")] {
+            clip.metadata.extra.insert("video_is_stale".into(), stale);
+            assert_eq!(clip.direct_video_url(), None);
+        }
+        clip.metadata.extra.clear();
+        clip.extra.insert(
+            "media_urls".into(),
+            serde_json::json!([{"url":"https://cdn.example/video.mp4","encoding":"1.0.0"}]),
+        );
+        assert_eq!(clip.direct_video_url(), None);
+        clip.extra.clear();
+        for url in [
+            "",
+            "http://cdn.example/video.mp4",
+            "file:///video.mp4",
+            "https://u:p@cdn.example/video.mp4",
+            "https://cdn.example/api/forbidden",
+        ] {
+            clip.video_url = Some(url.into());
+            assert_eq!(clip.direct_video_url(), None);
+        }
     }
 }

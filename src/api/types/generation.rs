@@ -38,6 +38,14 @@ pub struct GenerateRequest {
     pub token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub audio_refs: Vec<AudioReference>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub user_uploaded_image_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attached_lyrics: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attached_styles: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edit_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,6 +114,10 @@ impl GenerateRequest {
         Self {
             token: None,
             task: None,
+            audio_refs: Vec::new(),
+            user_uploaded_image_ids: Vec::new(),
+            attached_lyrics: None,
+            attached_styles: None,
             edit_session_id: None,
             project_id: None,
             creation_source: None,
@@ -341,6 +353,14 @@ impl GenerateResponse {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AudioReference {
+    pub clip_id: String,
+    pub style_prompt: String,
+    pub lyrics: String,
+    pub duration_s: f64,
 }
 
 #[cfg(test)]

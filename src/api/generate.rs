@@ -64,7 +64,14 @@ impl SunoClient {
         req: &mut GenerateRequest,
         required_features: &[&str],
     ) -> Result<Option<MaxLengths>, CliError> {
-        let mut web_requirement = generation_web_requirement(req.task.as_deref());
+        // Speech Describe shares the task name but has its own model contract.
+        let mut web_requirement = if req.metadata.is_speech == Some(true)
+            && req.task.as_deref() == Some("agentic_thinking")
+        {
+            None
+        } else {
+            generation_web_requirement(req.task.as_deref())
+        };
 
         let info = match self.billing_info().await {
             Ok(info) => info,
@@ -108,7 +115,7 @@ impl SunoClient {
         };
 
         if req.metadata.user_tier.trim().is_empty()
-            && let Some(user_tier) = info.plan.id
+            && let Some(ref user_tier) = info.plan.id
             && !user_tier.trim().is_empty()
         {
             req.metadata.user_tier = user_tier.trim().to_string();
@@ -181,7 +188,8 @@ impl SunoClient {
         } else {
             model.external_key.clone()
         };
-        if req.duration.is_none()
+        if req.metadata.is_speech != Some(true)
+            && req.duration.is_none()
             && req.metadata.create_mode == "custom"
             && matches!(
                 req.task.as_deref(),
@@ -191,10 +199,12 @@ impl SunoClient {
         {
             req.duration = Some(V6_DEFAULT_DURATION_SECONDS);
         }
-        let v6_custom_create = matches!(
-            req.task.as_deref(),
-            None | Some("vox") | Some("artist_consistency")
-        ) && req.metadata.create_mode == "custom"
+        let v6_custom_create = req.metadata.is_speech != Some(true)
+            && matches!(
+                req.task.as_deref(),
+                None | Some("vox") | Some("artist_consistency")
+            )
+            && req.metadata.create_mode == "custom"
             && is_v6_model(model);
         let explicit_variety = req
             .metadata
@@ -267,10 +277,16 @@ impl SunoClient {
                 )));
             }
         }
+        let speech_script =
+            req.metadata.is_speech == Some(true) && req.metadata.create_mode == "custom";
         let wants_default_variety = !explicit_variety
-            && v6_custom_create
+            && (v6_custom_create || speech_script)
             && model.supports_web_feature(CREATE_CONTROL_SLIDERS_FEATURE);
-        let requires_session_gate = explicit_variety
+        let new_mode_gate = (req.task.as_deref() == Some("agentic_thinking")
+            && req.metadata.is_speech != Some(true))
+            || req.task.as_deref() == Some("sound");
+        let requires_session_gate = new_mode_gate
+            || explicit_variety
             || req.metadata.is_mumble == Some(true)
             || req.metadata.is_max_mode == Some(true);
         let session = if requires_session_gate || wants_default_variety {
@@ -287,6 +303,36 @@ impl SunoClient {
         } else {
             None
         };
+        if new_mode_gate {
+            let gate = if req.task.as_deref() == Some("sound") {
+                "create-sounds"
+            } else {
+                "agentic-simple"
+            };
+            if !model.supports_web_task(if gate == "create-sounds" {
+                "sound"
+            } else {
+                "generate"
+            }) || (gate != "create-sounds" && !is_v6_model(model))
+                || !session
+                    .as_ref()
+                    .is_some_and(|session| session.flag_enabled(gate))
+            {
+                return Err(CliError::Config(format!(
+                    "the selected model and current session must support {gate}"
+                )));
+            }
+            if gate == "create-sounds" && (!info.is_active || info.plan.plan_key == "free") {
+                return Err(CliError::Config(
+                    "Sounds requires an active paid account".into(),
+                ));
+            }
+        }
+        if req.metadata.is_speech == Some(true) && req.mv != "chirp-goose" {
+            return Err(CliError::Config(
+                "the current Speech builder requires chirp-goose".into(),
+            ));
+        }
         if explicit_variety
             && !session
                 .as_ref()
@@ -337,10 +383,42 @@ impl SunoClient {
                 )));
             }
         }
+        if req.task.as_deref() == Some("agentic_thinking") && req.metadata.is_speech != Some(true) {
+            if !req.user_uploaded_image_ids.is_empty()
+                && session
+                    .as_ref()
+                    .is_some_and(|s| s.flag_enabled("disable-open-task-media-attachments"))
+            {
+                return Err(CliError::Config(
+                    "the current session disables media attachments".into(),
+                ));
+            }
+            validate_agentic_limits(req, &info, req.audio_refs.len(), 0)?;
+            for (field, value, max) in [
+                (
+                    "attached_lyrics",
+                    req.attached_lyrics.as_deref(),
+                    model.max_lengths.prompt,
+                ),
+                (
+                    "attached_styles",
+                    req.attached_styles.as_deref(),
+                    model.max_lengths.tags,
+                ),
+            ] {
+                if value.is_some_and(|v| max > 0 && v.chars().count() > max as usize) {
+                    return Err(CliError::Config(format!(
+                        "{field} exceeds the live model limit"
+                    )));
+                }
+            }
+        }
         validate_generation_duration(req, model)?;
         let uses_account_generation_limits = matches!(
             req.task.as_deref(),
-            None | Some("playlist_condition" | "vox" | "artist_consistency")
+            None | Some(
+                "playlist_condition" | "vox" | "artist_consistency" | "agentic_thinking" | "sound"
+            )
         );
         if uses_account_generation_limits {
             validate_generation_lengths(req, model)?;
@@ -571,6 +649,16 @@ struct WebModelRequirement {
 
 fn generation_web_requirement(task: Option<&str>) -> Option<WebModelRequirement> {
     match task {
+        Some("agentic_thinking") => Some(WebModelRequirement {
+            task: "agentic_thinking",
+            conditions: &[],
+            label: "Agentic Simple",
+        }),
+        Some("sound") => Some(WebModelRequirement {
+            task: "sound",
+            conditions: &[],
+            label: "Sounds",
+        }),
         Some("cover") => Some(WebModelRequirement {
             task: "cover",
             conditions: &["cover"],
@@ -616,6 +704,15 @@ fn generation_web_requirement(task: Option<&str>) -> Option<WebModelRequirement>
 }
 
 fn model_supports_requirement(model: &Model, requirement: WebModelRequirement) -> bool {
+    if requirement.task == "agentic_thinking" {
+        return is_v6_model(model) && model.supports_web_task("generate");
+    }
+    // Sounds has no audio conditions and Web excludes Custom Models even when
+    // their inherited capabilities include `all`.
+    if requirement.task == "sound" {
+        return model.supports_web_task("sound")
+            && !model.badges.iter().any(|badge| badge == "custom");
+    }
     model.supports_web_task(requirement.task)
         && model.supports_web_conditions(requirement.conditions)
 }
@@ -818,6 +915,73 @@ fn generation_challenge_error(challenge: &super::challenge::GenerationChallenge)
     CliError::ChallengeRequired(format!(
         "Suno requires a generation challenge (captcha_version={version}). When stored Clerk refresh material is available, Sunox refreshes the JWT once and repeats the challenge preflight before showing this message. Complete a manual generation challenge in the Suno web app and retry, provide a valid challenge token with --token <token>, or force the browser-backed solver with --captcha."
     ))
+}
+
+impl SunoClient {
+    pub(crate) async fn validate_agentic_attachments(
+        &self,
+        req: &GenerateRequest,
+        audio_count: usize,
+        additional_images: usize,
+    ) -> Result<(), CliError> {
+        let info = self.billing_info().await?;
+        let session = self.session_info().await?;
+        if (additional_images > 0 || !req.user_uploaded_image_ids.is_empty())
+            && session.flag_enabled("disable-open-task-media-attachments")
+        {
+            return Err(CliError::Config(
+                "the current session disables media attachments".into(),
+            ));
+        }
+        if !session.flag_enabled("agentic-simple") {
+            return Err(CliError::Config(
+                "the current session does not enable agentic-simple".into(),
+            ));
+        }
+        validate_agentic_limits(req, &info, audio_count, additional_images)
+    }
+}
+fn validate_agentic_limits(
+    req: &GenerateRequest,
+    info: &super::types::BillingInfo,
+    audio_count: usize,
+    additional_images: usize,
+) -> Result<(), CliError> {
+    let limits = info
+        .extra
+        .get("agentic_limits")
+        .ok_or_else(|| CliError::Config("Suno did not provide agentic_limits".into()))?;
+    let limit = |key: &str| {
+        limits
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| CliError::Config(format!("Suno did not provide {key}")))
+    };
+    let image_count = req
+        .user_uploaded_image_ids
+        .len()
+        .checked_add(additional_images)
+        .ok_or_else(|| CliError::Config("too many images".into()))?;
+    let atoms = audio_count
+        + image_count
+        + usize::from(req.attached_lyrics.as_ref().is_some_and(|s| !s.is_empty()))
+        + usize::from(req.attached_styles.as_ref().is_some_and(|s| !s.is_empty()));
+    if audio_count as u64 > limit("max_audio_refs")?
+        || image_count as u64 > limit("max_images")?
+        || atoms as u64 > limit("max_atoms")?
+    {
+        return Err(CliError::Config(
+            "attachments exceed the current account's Agentic limits".into(),
+        ));
+    }
+    let images = req
+        .user_uploaded_image_ids
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    if images.len() != req.user_uploaded_image_ids.len() {
+        return Err(CliError::Config("image references must be distinct".into()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-pub use crate::api::download::DownloadFormat;
+pub use crate::api::download::{DownloadFormat, DownloadZipFormat};
 
 #[derive(clap::Args)]
 pub struct UploadArgs {
@@ -36,10 +36,33 @@ pub struct UploadStatusArgs {
     pub upload_id: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum DownloadRoute {
+    /// Suno export; may consume download allowance
+    Official,
+    /// Exact unencrypted audio URL returned by Suno; never authorizes or converts
+    Cdn,
+    /// Reuse or generate a song video, then copy its original audio into M4A
+    #[default]
+    Video,
+}
+
 #[derive(clap::Args)]
 pub struct DownloadArgs {
-    /// Clip ID(s) to download; locked sources are authorized once unless --read-only is set
+    /// Clip ID(s); the official source authorizes locked songs unless --read-only is set
     pub ids: Vec<String>,
+
+    /// Download source; CDN/video never authorize or fall back to official export
+    #[arg(long, value_enum, default_value = "video")]
+    pub source: DownloadRoute,
+
+    /// Compatibility flag: video source already generates missing/stale videos unless --read-only
+    #[arg(long)]
+    pub generate_video: bool,
+
+    /// Maximum seconds to wait when generating a missing song video
+    #[arg(long)]
+    pub video_timeout: Option<u64>,
 
     /// Output directory
     #[arg(short, long)]
@@ -49,11 +72,11 @@ pub struct DownloadArgs {
     #[arg(long)]
     pub force: bool,
 
-    /// Download prepared MP4 video instead of audio
+    /// Save MP4 instead of audio (official prepared export, or direct video source)
     #[arg(long)]
     pub video: bool,
 
-    /// Audio format; MP3/M4A/WAV are prepared-first and OPUS has been retired and is rejected before authorization
+    /// Audio format (official: MP3 default; CDN: existing M4A/MP3; video: unchanged M4A only)
     #[arg(long, value_enum)]
     pub format: Option<DownloadFormat>,
 
@@ -75,4 +98,18 @@ pub struct TimedLyricsArgs {
     /// Output as LRC format
     #[arg(long)]
     pub lrc: bool,
+}
+
+#[derive(clap::Args)]
+pub struct DownloadZipArgs {
+    #[arg(required=true, num_args=1..=200)]
+    pub ids: Vec<String>,
+    #[arg(long, default_value = "m4a", value_enum)]
+    pub format: DownloadZipFormat,
+    #[arg(long, default_value = "Suno songs")]
+    pub workspace_name: String,
+    #[arg(short, long)]
+    pub output: Option<String>,
+    #[arg(long)]
+    pub force: bool,
 }

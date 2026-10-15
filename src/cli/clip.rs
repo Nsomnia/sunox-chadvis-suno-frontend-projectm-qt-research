@@ -299,7 +299,7 @@ pub enum ClipCommand {
     /// Generate an image from a prompt and apply it to a clip
     GenerateImage(GenerateImageArgs),
 
-    /// Validate legacy video generation (submit is blocked until clip eligibility is provable)
+    /// Generate a song video after checking account and clip eligibility
     GenerateVideo(GenerateVideoArgs),
 
     /// Read or wait for clip video-generation status

@@ -57,6 +57,9 @@ pub async fn get(args: GetStemsArgs, ctx: &AppContext) -> Result<(), CliError> {
         }
         return super::media::download_with_shared_source(
             DownloadArgs {
+                source: crate::cli::DownloadRoute::Official,
+                generate_video: false,
+                video_timeout: None,
                 ids,
                 output: args.output,
                 force: args.force,

@@ -21,7 +21,9 @@ pub(super) fn request(
             "/api/download/authorize" if body["item_type"] == "clip" => {
                 field(body, "item_id", "clip_ids", identifiers);
             }
-            "/api/custom-model/archive" => field(body, "id", "model_ids", identifiers),
+            "/api/custom-model/archive" | "/api/custom-model/edit" => {
+                field(body, "id", "model_ids", identifiers)
+            }
             _ => {}
         }
         if path.starts_with("/api/generate/") {
@@ -29,6 +31,20 @@ pub(super) fn request(
                 field(body, key, "clip_ids", identifiers);
             }
             array_field(body, "playlist_clip_ids", "clip_ids", identifiers);
+            array_field(
+                body,
+                "user_uploaded_image_ids",
+                "image_upload_ids",
+                identifiers,
+            );
+            for reference in body
+                .get("audio_refs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                field(reference, "clip_id", "clip_ids", identifiers);
+            }
             if let Some(metadata) = body.get("metadata") {
                 field(metadata, "recreated_from_clip_id", "clip_ids", identifiers);
             }
@@ -102,6 +118,11 @@ pub(super) fn response(path: &str, value: &Value, identifiers: &mut Identifiers)
     let path = path.trim_end_matches('/');
     named_fields(path, value, identifiers);
     match path {
+        _ if path.starts_with("/api/playlist/v2/") && path.ends_with("/album/publish") => {
+            // Publishing can change track visibility before album/track readback finishes.
+            // Persist the exact reported tracks even when readback fails or the CLI stops.
+            array_field(value, "published_clip_ids", "clip_ids", identifiers);
+        }
         "/api/playlist/create" => {
             // Match decode_playlist's supported wrappers and PlaylistInfo's deferred metadata.
             for candidate in [Some(value), value.get("playlist"), value.get("data")]
@@ -150,6 +171,8 @@ fn named_fields(path: &str, value: &Value, identifiers: &mut Identifiers) {
         ("transaction_uuid", "transaction_uuid"),
         ("clip_id", "clip_ids"),
         ("source_clip_id", "clip_ids"),
+        ("source_playlist_id", "playlist_ids"),
+        ("model_id", "model_ids"),
         ("underpainting_clip_id", "clip_ids"),
         ("overpainting_clip_id", "clip_ids"),
         ("action_clip_id", "clip_ids"),
@@ -452,5 +475,32 @@ mod tests {
                 ("image_ids".into(), vec!["image-known".into()]),
             ])
         );
+    }
+
+    #[test]
+    fn album_publish_preserves_reported_tracks_without_promoting_unrelated_payloads() {
+        let body = json!({
+            "success": true,
+            "published_clip_ids": ["published-a", "published-b", "published-a", "invalid id"],
+            "metadata": {"id": "PrivateMetadataValue"},
+            "token": "SecretTokenValue"
+        });
+        let mut ids = Identifiers::new();
+        response(
+            "/api/playlist/v2/album-known/album/publish",
+            &body,
+            &mut ids,
+        );
+        assert_eq!(
+            ids,
+            Identifiers::from([(
+                "clip_ids".into(),
+                vec!["published-a".into(), "published-b".into()]
+            )])
+        );
+
+        let mut unrelated = Identifiers::new();
+        response("/unknown", &body, &mut unrelated);
+        assert!(unrelated.is_empty());
     }
 }

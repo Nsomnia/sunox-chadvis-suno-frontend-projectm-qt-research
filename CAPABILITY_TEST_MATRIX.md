@@ -111,3 +111,60 @@ submissions remain outside these regression tests; they use isolated HTTP fixtur
 Authorized account execution confirms managed-Bridge Turnstile plus v6 creation (two complete clips), Cowrite rewrite, Persona private visibility and metadata set, prepared WAV, and Split from Mix (four complete clips across two result banks). Live testing exposed and repaired an absent-action ownership fallback in Stems and a Persona artwork URL incorrectly replayed as an upload ID. Explicit server restrictions remain binding.
 
 The hCaptcha automatic fallback did not naturally trigger after the fix; its automated coverage must not be described as live acceptance. Auto Split, newly visible Advanced Split, legacy WAV conversion, and other unexercised writes remain separate boundaries. The detailed account-specific outputs are retained locally and excluded from release source.
+
+
+## October 13 protocol additions
+
+| Capability | CLI | Verification |
+|---|---|---|
+| Custom Model bases / training gate | models custom bases; train --base-model | Exact bases/session preflight, unusable-base rejection, single training POST, existing source ownership/readback tests |
+| Shared model discovery / owned rename | models custom shared/rename | Read-only shared route; owned-model rename + billing readback; shared generation/permission writes unverified |
+| Speech | speech --script/--script-file/--describe | Fixed chirp-goose, speech metadata, Script-only controls, challenge contract, no music duration default |
+| Agentic Simple | simple --audio-ref/--image-file/--image-id | Session gate, realtime attachment limits before upload, exact source clips; video/MIDI remain unverified |
+| Sounds | sounds [--loop --bpm --key] | Paid session/model gate and sound_configs contract |
+| Albums | album list/info/create/set/add/publish | Distinct private draft/type/publish contract, exact ownership, metadata/visibility/track readback, no replay on incomplete/5xx response |
+| ZIP | download-zip | 1..200 distinct IDs, live ZIP gate, one batch-ID prepare request without individual authorization, malformed/partial responses, structural archive validation and atomic files |
+
+The above additions have automated local protocol coverage. Current production reads confirmed
+bases/shared/session/album-library contracts; no new production training or album publication is
+part of automated validation. Current write-path acceptance must be reported separately.
+
+## 2026-10-15 download and protocol review
+
+- Explicit `download --source cdn`: exact returned unencrypted M4A/MP3 only, no authorization,
+  prepared export, conversion, or timed lyrics writes; default is video; official requires explicit --source official. Encoded URLs and
+  unavailable formats fail closed. CLI HTTP fixtures verify no follow-up request on refusal.
+- `playback_url` excludes encoded progressive M4A, including an encoded URL duplicated in `audio_url`.
+- ZIP submits one M4A/MP3 prepare request without individual authorization, saves valid partial
+  archives with skipped-song and format-substitution warnings, validates optional list schemas and compressed
+  data boundaries, and keeps album publish clip IDs in recovery checkpoints.
+- Live read-only sample: 12/12 clips returned encrypted M4A; bounded probes of 3 returned ciphertext.
+  This verifies rejection of the current protected path, not a successful unmetered production export.
+
+## Song-video generation connection
+
+`clip generate-video` checks the plan feature, exact JWT/clip ownership, completed/non-trash state
+and current download restriction (including the explicit-false contest flag override). It sends one
+bodyless POST and polls status. Scoped regressions cover exact method/path/body, rejected sources,
+redirect/server-error no replay, and post-submit observation ambiguity. It never authorizes a download.
+
+## Standard song-video download source
+
+- `download --source video` reuses existing exact HTTPS video URLs, rejects stale/encoded/unknown media,
+  and copies source AAC/Opus into M4A. `--video` saves MP4; missing/stale video is rendered by default unless `--read-only`.
+  Only explicit `--source official` selects allowance exports; failure never falls back.
+- FFprobe/FFmpeg runtime checks and batch destination preflight precede renders. No auth headers/redirects,
+  official-export fallback, download authorization, format conversion or aligned-lyrics generation.
+- Quality reports preserve measured codec/bitrate/rate/channels/dimensions. Stream-copy properties and
+  atomic staging are tested, including failure preserving an existing file, tool timeout/output limits,
+  CLI read-only/missing-dependency guards, single render submission and generated-ID recovery.
+
+## Review follow-ups: video retry and Agentic Simple auto selection
+
+- Video downloads inspect status before rendering. Completed URLs bypass lagging clip metadata;
+  existing jobs are polled without a new POST, including after a timed-out earlier invocation.
+  Status errors/unknown states never trigger renders; read-only reuse/polling remains supported.
+- Agentic Simple auto selection filters usable v6 models with generate capability before choosing
+  a default. Explicit incompatible selectors and an empty eligible set fail without submission.
+- Agent-info download defaults, safety policies, format examples and CLI video help match the
+  current default video route. Specialized stem/ZIP export behavior remains unchanged.

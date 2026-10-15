@@ -11,7 +11,7 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
         "version": env!("CARGO_PKG_VERSION"),
         "description": "Suno AI music generation CLI — direct Suno web workflow",
         "commands": [
-            "create", "download", "add", "lyrics", "clip", "persona", "voice", "playlist",
+            "create", "speech", "simple", "sounds", "album", "download-zip", "download", "add", "lyrics", "clip", "persona", "voice", "playlist",
             "credits", "models", "capabilities", "login", "logout", "auth", "config", "doctor", "agent-info",
             "install-skill", "install-browser-extension", "update"
         ],
@@ -29,7 +29,8 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
             "v3": "chirp-v3-0",
             "v2": "chirp-v2-xxl-alpha",
         },
-        "model_selection": "The default generation selector is v6 Pro chirp-hawk. Model availability, IDs, task capabilities, and max_lengths remain account-specific and every generation or Cover selector requires a successful billing read. default_model=auto selects a usable account default, then usable free default, then first usable model. Explicit selectors resolve by exact external key, exact account model ID, or unambiguous case-insensitive display name; unavailable, unusable, and ambiguous matches fail before submission. --duration accepts whole seconds from 10..360 for v6 Custom generation and retains the exact v5.5 chirp-fenix compatibility path; advertised max_lengths.duration is also enforced. Remaster uses the separate accessible_features and remaster_model_types contract, then preflights source state and action_config; legacy remaster can_use is diagnostic only.",
+        "historical_model_aliases": "The models map includes historical aliases for compatibility; current availability is exclusively determined by live billing.",
+        "model_selection": "The default generation selector is v6 Pro chirp-hawk. Model availability, IDs, task capabilities, and max_lengths remain account-specific and every generation or Cover selector requires a successful billing read. default_model=auto selects a usable compatible account default, then usable compatible free default, then first usable compatible model. Agentic Simple additionally filters for v6 models advertising generate capability before choosing. Explicit selectors resolve by exact external key, exact account model ID, or unambiguous case-insensitive display name; unavailable, unusable, and ambiguous matches fail before submission. --duration accepts whole seconds from 10..360 for v6 Custom generation and retains the exact v5.5 chirp-fenix compatibility path; advertised max_lengths.duration is also enforced. Remaster uses the separate accessible_features and remaster_model_types contract, then preflights source state and action_config; legacy remaster can_use is diagnostic only.",
         "remaster_models": {
             "v6": "chirp-halibut",
             "v5.5": "chirp-flounder",
@@ -38,17 +39,22 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
         },
         "workflow": {
             "create": "submit generation or description and return clip payload",
+            "speech": "Script/Describe use chirp-goose with is_speech metadata; Script supports tone/background music/gender/Variety, Describe uses agentic_thinking. Read live models and session gates before submit; then clip wait.",
+            "simple": "Agentic Simple uses task=agentic_thinking with exact completed audio references, moderated image-upload UUIDs and optional attached lyrics/styles. Account atom/audio/image limits are enforced before uploads. Existing create/describe compatibility behavior is preserved.",
+            "sounds": "Paid session-gated one-shot or loop generation through task=sound with user_loop/user_tempo/user_key. Then clip wait.",
+            "album": "Read/list, create private draft, convert owned playlist into a new draft, update type/metadata, add tracks, and explicitly publish. Publication can make tracks public and notify followers; never publish without an explicit caller request. Exact ownership and readback are required.",
+            "download-zip": "Prepare and validate a ZIP for 1..200 distinct completed clips. Require the multi-select-download-zip gate, prepare M4A/MP3 once with a batch ID without individual authorization calls, never replay an ambiguous request, preserve failed_clips/substituted_clips warnings and batch details, and write atomically without extracting. --read-only blocks ZIP preparation.",
             "clip wait": "poll clip ids until complete or error",
-            "clip download": "download completed media after the source clip is explicitly unlocked. is_download_unlocked must be exactly true; otherwise normal mode sends POST /api/download/authorize once and read-only mode fails closed. MP3/M4A/WAV and video prefer prepared mp3/m4a/wav/mp4 routes; legacy WAV/direct-video paths run only after source unlock. Default prepared MP3 embeds lyrics. Output directories are created automatically; existing files require explicit --force to replace. Downloads have a two-hour total deadline and 2 GiB limit, may be plan-metered, and batch failures return partial_download details.",
+            "clip download": "download completed media; default --source video copies original audio into M4A or saves MP4. Reuse existing video or poll an existing render before generating a missing/stale video; --read-only prevents new renders. Never authorize or fall back to official export. For explicit --source official only, is_download_unlocked must be exactly true; otherwise normal mode authorizes once and read-only mode refuses. Official prepared MP3 embeds lyrics. Output directories are created automatically; existing files require --force. Transfers have a two-hour deadline and 2 GiB limit. Batch failures preserve completed paths and recovery details.",
             "post_submit_workflow": "When create or a generation-backed edit, including clip inspire, returns new or processing clip IDs, call `sunox clip wait <clip_id> --json` before download, quality filtering, or playlist decisions unless the caller explicitly wants submit-only behavior.",
             "audio_analysis": {
-                "simple": "For simple audio analysis, read playback_url and song-page context from `sunox clip info <clip_id> --json`; playback_url preserves a usable top-level audio_url or resolves the current media_urls progressive M4A when Suno returns /api/forbidden. Download only when a local file is needed. Non-auth supplemental read failures appear in supplemental_errors. Do not create new Suno resources just to inspect audio.",
+                "simple": "For simple audio analysis, read playback_url and song-page context from `sunox clip info <clip_id> --json`; playback_url selects only a usable unencrypted audio URL; encoded media_urls are not ordinary audio files. Download only when a local file is needed. Non-auth supplemental read failures appear in supplemental_errors. Do not create new Suno resources just to inspect audio.",
                 "deep": "Use heavier WAV or generation-backed stems only when the user explicitly asks for WAV, stems, lossless audio, or deep spectral analysis; do not silently downgrade a WAV/lossless request to MP3."
             },
             "download_formats": {
-                "current_cli": "current CLI download gates every file on the source clip's exact is_download_unlocked=true state. When needed, normal mode calls POST /api/download/authorize once per unique source; --read-only never authorizes. --format selects mp3|m4a|wav and --video selects prepared mp4. MP3/M4A/WAV/mp4 are prepared-first; legacy WAV/direct-video fallback require an already authorized source. --no-convert refuses the legacy conversion POST.",
+                "current_cli": "explicit --source official gates every file on the source clip's exact is_download_unlocked=true state. When needed, normal mode calls POST /api/download/authorize once per unique source; --read-only never authorizes. --format selects mp3|m4a|wav and --video selects prepared mp4. MP3/M4A/WAV/mp4 are prepared-first; legacy WAV/direct-video fallback require an already authorized source. --no-convert refuses the legacy conversion POST.",
                 "web_pro_choices": "Suno Web exposes Pro choices for prepared MP3, M4A, WAV, and Video behind one source unlock. `clip stems` starts the current paid Auto Split or Split from Mix generation; `clip get-stems --download` authorizes the parent source at most once and shares that unlock across all existing stems. OPUS has been retired and is rejected before any account request.",
-                "agent_default": "Use clip info/playback_url when no local file is needed. Keep audio_url as the raw upstream field; /api/forbidden is not media. When a file is requested, use the prepared default MP3; use another format, conversion, stems, or video only when explicitly requested and supported. Download authorization can consume allowance and an ambiguous authorization must never be replayed blindly."
+                "agent_default": "Use clip info/playback_url when no local file is needed. Keep audio_url as the raw upstream field; /api/forbidden is not media. When a file is requested, default to unchanged M4A from the song video, generating a missing/stale video unless --read-only. Only explicitly requested allowance exports may use --source official; never fall back to that source. Download authorization can consume allowance and an ambiguous authorization must never be replayed blindly."
             }
         },
         "execution_policy": {
@@ -82,11 +88,17 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
             "sunox clip underpaint <clip_id> --json",
             "sunox clip overpaint <clip_id> --json",
             "sunox clip download <clip_id> --json",
-            "sunox clip download <clip_id> --format wav --json",
+            "sunox clip download <clip_id> --source official --format wav --json",
             "sunox clip get-stems <clip_id> --json",
             "sunox clip video-status <clip_id> --json",
             "sunox voice phrase --language en --json",
             "sunox models custom pending --json",
+            "sunox models custom bases --json",
+            "sunox models custom shared --json",
+            "sunox speech --script <text> --tone <style> --json",
+            "sunox simple <prompt> --audio-ref <clip_id> --json",
+            "sunox sounds <prompt> --loop --bpm 120 --json",
+            "sunox album list --json",
             "sunox lyrics projects list --json",
             "sunox playlist add <playlist_id> <clip_id> --json",
             "sunox persona list --json",
@@ -112,11 +124,11 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
         },
         "agent_safety": {
             "parallel_writes": "do not pass --parallel or disable serial_mutations unless the user explicitly asks to allow same-account concurrent writes",
-            "read_only": "pass global --read-only for audits and inspections that must not write. It blocks account writes before submission, disables aligned-lyrics augmentation, and permits a download only for an already unlocked source whose is_download_unlocked field is exactly true; it never calls /api/download/authorize",
+            "read_only": "pass global --read-only for audits and inspections that must not write. It blocks account writes before submission, disables aligned-lyrics augmentation, and permits official download only for an already unlocked source whose is_download_unlocked field is exactly true; it never calls /api/download/authorize; --source cdn separately permits exact unencrypted audio GETs without export writes",
             "ambiguous_mutation": "generation, download authorization, Remaster, conversion, Voice, Custom Model, lyrics-project, visual, or another submitted-write ambiguity includes an operation ID and recovery details. Download authorization may consume allowance and must never be replayed blindly; inspect exact read-only state and retry only when recovery.resumable=true",
             "single_write_transport": "Suno business writes refresh authentication before submission, send at most once, never follow redirects, and map transport loss, 3xx, 5xx, or an unreadable accepted response to ambiguous_mutation; only read/validation requests use auth retry",
             "paid_or_credit_work": "create, reuse, inspire, cover, extend, underpaint, overpaint, stems, remaster, speed, reverse, crop, fade, upload, Voice creation, Custom Model training, AI image/video generation, conversion, and prepared download/export workflows can be stateful, credit-sensitive, or plan-metered; only run the amount, operation, and format the user requested",
-            "download_quality": "current CLI uses prepared MP3 by default, supports prepared M4A/WAV and video MP4, and rejects retired OPUS before authorization; agents should request a file/format only when needed",
+            "download_quality": "default --source video preserves original audio as M4A or saves MP4 with --video; only --source official selects prepared MP3/M4A/WAV/MP4 exports, which may consume download allowance. OPUS is retired; agents should request files/formats only when needed",
             "public_visibility": "do not publish clips, playlists, or personas or make them public unless the user explicitly asks",
             "persona_create_visibility": "persona create is private by default and requires explicit --public to create a public persona",
             "destructive_actions": "do not run delete, trash, purge, empty-trash, or other destructive commands unless the user explicitly asks. clip purge and clip empty-trash are irreversible and require -y/--yes.",
@@ -173,7 +185,7 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
                     "GET /api/clips/remixes/count?clip_id=<clip_id>",
                     "GET /api/clips/get_similar/?id=<clip_id>"
                 ],
-                "json_shape": "main clip fields remain top-level and raw audio_url is preserved; playback_url selects a usable audio_url or the current media_urls progressive M4A when audio_url is /api/forbidden; attribution, comments, remix_count={count,is_capped,...}, and similar_clips are added as semantic song-page context; if a non-auth, non-rate-limit supplemental read fails, the base clip is still returned with supplemental_errors; auth and rate-limit errors still abort normally"
+                "json_shape": "main clip fields remain top-level and raw audio_url is preserved; playback_url selects a usable unencrypted audio_url or unencrypted progressive M4A when audio_url is /api/forbidden, and excludes encoded playback media; attribution, comments, remix_count={count,is_capped,...}, and similar_clips are added as semantic song-page context; if a non-auth, non-rate-limit supplemental read fails, the base clip is still returned with supplemental_errors; auth and rate-limit errors still abort normally"
             },
             "clip remaster": {
                 "route": "POST /api/generate/upsample",
@@ -188,12 +200,14 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
                 "response": "generation response with submitted clips"
             },
             "clip download": {
-                "authorization": "only exact is_download_unlocked=true skips authorization; otherwise POST /api/download/authorize with item_id=<source clip id> and item_type=clip once before any file GET. The response preserves ok, reason, message, and credit_deducted. ok!=true stops; transport ambiguity is read back and never blindly replayed; --read-only fails closed instead of authorizing",
-                "route": "GET /api/download/clip/{clip_id}?format=mp3|m4a|wav|mp4 is prepared-first. Legacy GET/convert WAV, direct clip.video_url, are compatibility paths permitted only after the source unlock gate",
-                "defaults": "without --format, uses the official prepared MP3 endpoint and embeds lyrics into ID3 tags; --format selects mp3|m4a|wav",
-                "constraints": "--video prefers prepared mp4 and cannot be combined with --format. OPUS is retired and rejected before authorization; --no-convert refuses a missing conversion. Output is preserved unless --force is explicit. Authorization and downloads may be plan-metered.",
+                "video_source": "--source video requires FFprobe (plus FFmpeg for audio extraction), copies original AAC/Opus into M4A, or saves MP4 with --video. Default source: reuses existing non-stale video; generates missing/stale video unless --read-only, bounded by --video-timeout. Dependencies and destinations checked before writes; no download authorization, conversions, or official fallback. JSON reports actual source_media/output_media quality and video_generated. Partial failures preserve generated_video_clip_ids; recover via video-status and retry with --read-only.",
+                "cdn": "--source cdn uses only exact unencrypted MP3/M4A URLs returned by Suno; without --format prefer available M4A then MP3. No authorization, prepare, conversion, aligned-lyrics writes, or fallback to official. Encoded or unavailable media fail closed. Compatible with --read-only, but not a guarantee of unrestricted downloads.",
+                "authorization": "for --source official, only exact is_download_unlocked=true skips authorization; otherwise POST /api/download/authorize with item_id=<source clip id> and item_type=clip once before any file GET. The response preserves ok, reason, message, and credit_deducted. ok!=true stops; transport ambiguity is read back and never blindly replayed; --read-only fails closed instead of authorizing",
+                "route": "Only --source official: GET /api/download/clip/{clip_id}?format=mp3|m4a|wav|mp4 is prepared-first. Legacy GET/convert WAV, direct clip.video_url, are compatibility paths permitted only after the source unlock gate",
+                "defaults": "default --source video copies original audio into M4A, automatically generating missing/stale videos unless --read-only; never authorizes or falls back to official. Only explicit --source official uses the official prepared MP3 endpoint and embeds lyrics; video supports unchanged M4A only; CDN supports available M4A/MP3 without conversion",
+                "constraints": "Default --video saves original MP4; --source official --video prefers prepared mp4 and cannot be combined with --format. OPUS is retired and rejected before authorization; --no-convert refuses a missing conversion. Output is preserved unless --force is explicit. Authorization and downloads may be plan-metered.",
                 "billing": "credits and capabilities expose optional download_usage.current_period_downloads_limit, current_period_downloads_used, additional_download_remaining, and download_credit_packs from live billing. Runtime never hard-codes quota by plan name",
-                "timed_lyrics": "normal mode may POST then poll aligned_lyrics/v3 before v2 compatibility fallback; --read-only only reads an existing alignment and never starts augmentation"
+                "timed_lyrics": "only --source official normal mode may POST then poll aligned_lyrics/v3 before v2 compatibility fallback; --read-only only reads an existing alignment and never starts augmentation"
             },
             "clip stems": {
                 "route": "POST /api/generate/v2-web/",
@@ -289,7 +303,7 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
             }
         },
         "features": [
-            "account_capabilities", "read_only", "clip_actions", "generation_duration",
+            "account_capabilities", "read_only", "clip_actions", "generation_duration", "song_video_generation",
             "tags", "enhance_tags", "negative_tags", "vocal_gender",
             "weirdness", "style_influence", "variety", "mumble_mode", "max_mode", "audio_influence",
             "instrumental", "extend", "concat", "cover", "clip_inspiration", "remaster",
@@ -314,7 +328,7 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
             "cover_art_video_batch", "cover_art_pending", "cover_art_history",
             "cover_art_poll", "cover_art_apply_image", "cover_art_apply_video",
             "voice_phrase", "voice_verification", "voice_create_private",
-            "custom_model_pending", "custom_model_train", "custom_model_archive",
+            "custom_model_pending", "custom_model_train", "custom_model_archive", "custom_model_bases", "shared_custom_models", "custom_model_rename", "speech", "agentic_simple", "sounds", "albums", "download_zip",
             "lyrics_projects", "lyrics_rewrite", "lyrics_mashup", "lyrics_project_link"
         ],
         "unsupported_surfaces": {
@@ -325,10 +339,6 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
             "update_feedback_state": {
                 "status": "bundle_discovered_unverified",
                 "reason": "clip feedback-state mutation is visible in the bundle and intentionally not exposed"
-            },
-            "legacy_video_generation_submit": {
-                "status": "blocked_unconfirmed_clip_eligibility",
-                "reason": "the legacy POST/status routes are confirmed, but no exact current ownership/download eligibility seam is available; video-status remains read-only"
             },
             "studio_multitrack_export": {
                 "status": "out_of_scope",
@@ -462,8 +472,8 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
         "safety": "--confirm-rights, --confirm-eligibility, and --confirm-biometric-consent are separate mandatory attestations. Suno Terms/Privacy, disclosed training use and account choices, Statsig gates, and server eligibility remain authoritative. Every server ID is atomically checkpointed for inspection, but the multi-write workflow has no generic safe resume command and no mutation POST is automatically replayed after an uncertain response"
     });
     info["command_notes"]["models custom"] = serde_json::json!({
-        "routes": ["POST /api/custom-model/create/", "GET /api/custom-model/pending/", "POST /api/custom-model/archive/"],
-        "train": "requires 6 to 100 distinct complete, explicitly non-trashed owned-source clip IDs, a non-empty name of at most 16 Unicode characters, --confirm-rights, the live custom_models entitlement, and --confirm-ui-available after visibly confirming that the current Suno Web account exposes training; without either attestation no training POST is sent, and server eligibility and charging remain authoritative",
+        "routes": ["GET /api/custom-model/bases/", "POST /api/custom-model/create/", "GET /api/custom-model/pending/", "GET /api/custom-model/shared", "PUT /api/custom-model/edit/", "POST /api/custom-model/archive/"],
+        "train": "requires 6 to 100 distinct complete, explicitly non-trashed owned-source clip IDs, a non-empty name of at most 16 Unicode characters, --confirm-rights, the live custom_models entitlement, the live custom-model-ui session gate, and an exact usable advertised training base; the legacy UI attestation cannot override current gates, and server eligibility and charging remain authoritative",
         "ready_models": "ready Custom Models are account billing model rows and are selected through create --model; pending training rows use models custom pending",
         "archive": "archive is destructive from the CLI user's perspective, requires -y/--yes, and is not described as permanent deletion or recoverable; accepted archive state is verified with bounded pending/billing GETs without replaying POST"
     });
@@ -497,7 +507,7 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
     info["command_notes"]["clip generate-video"] = serde_json::json!({
         "routes": ["POST /api/video/generate/{clip_id}/ with no body", "GET /api/video/generate/{clip_id}/status/"],
         "status_command": "clip video-status is read-only; add --wait for a bounded poll without replaying submit",
-        "safety": "the route is known but no exact current response seam proves per-clip ownership and download eligibility; generate-video therefore fails closed before POST and does not guess an action name"
+        "safety": "requires generate_song_video entitlement, exact JWT ownership, complete/non-trashed source and current download_disabled_reason eligibility; sends one bodyless POST then polls, without download authorization or automatic download. Uncertain submits and observation errors never trigger a resubmit"
     });
     if let Some(models) = info["models"].as_object_mut() {
         models.insert(
@@ -514,9 +524,9 @@ pub async fn agent_info(_ctx: &AppContext) -> Result<(), CliError> {
     info["protocol_safety"] = serde_json::json!({
         "live_account_command": "sunox capabilities --json",
         "clip_action_preflight": "sunox clip actions <clip_id> --json",
-        "read_only": "global --read-only rejects account writes before the first write request; downloads require an already unlocked source and never POST authorization",
+        "read_only": "global --read-only rejects account writes before submission. Default video downloads can reuse or poll existing video without source unlock but never create a new render; only official exports require an already unlocked source. Never POST download authorization in read-only mode",
         "model_selectors": "display name, external key, or account model ID; ambiguity and unusable models fail closed",
-        "download_policy": "strict is_download_unlocked=true skips POST /api/download/authorize; otherwise authorize one unique source once. MP3/M4A/WAV/mp4 are prepared-first, legacy fallbacks require source unlock; retired OPUS is rejected before requests, and Stems reuse the parent source authorization",
+        "download_policy": "ordinary download defaults to --source video: reuse original audio as M4A, inspect/poll existing jobs before rendering, never authorize or fall back to official. Only explicit --source official uses prepared exports and authorizes once per locked source. Special exports remain separate: get-stems --download authorizes the parent at most once; download-zip prepares an official archive. Both may consume allowance. OPUS is retired",
         "download_billing": "read current_period_downloads_limit, current_period_downloads_used, additional_download_remaining, and download_credit_packs from live billing; never hard-code quota by plan name",
         "mutation_transport": "Suno business writes use a no-redirect client and are never replayed after 401; transport loss, 3xx, 5xx, and unreadable accepted bodies are ambiguous",
         "mutation_uncertainty": "ambiguous_mutation means the write may have succeeded; inspect operation_id and exact readback before any retry, and retry only when recovery.resumable=true"
