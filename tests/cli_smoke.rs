@@ -782,7 +782,10 @@ fn install_skill_prints_current_generation_guidance() {
         .stdout(predicate::str::contains("as allowing the installed Bridge"))
         .stdout(predicate::str::contains("`--no-captcha`"))
         .stdout(predicate::str::contains("simple audio analysis"))
-        .stdout(predicate::str::contains("--format mp3|m4a|wav|opus"))
+        .stdout(predicate::str::contains("--format mp3|m4a|wav"))
+        .stdout(predicate::str::contains(
+            "default video audio extraction as M4A",
+        ))
         .stdout(predicate::str::contains("do not publish"))
         .stdout(predicate::str::contains("destructive commands require"))
         .stdout(predicate::str::contains("WAV"))
