@@ -13,6 +13,12 @@ backward-compatible features, upstream protocol adaptations, and fixes.
 
 ## [0.4.0] - 2026-10-15
 
+### Security
+
+- Update Rustls to 0.23.46 for RUSTSEC-2026-0346, RUSTSEC-2026-0347,
+  RUSTSEC-2026-0348 and RUSTSEC-2026-0349; update quinn-proto to 0.11.18 for
+  RUSTSEC-2026-0338 through RUSTSEC-2026-0342 and its required RNG dependencies.
+
 ### Changed
 
 - **Breaking:** Ordinary `download` and `clip download` now default to the song-video source.
