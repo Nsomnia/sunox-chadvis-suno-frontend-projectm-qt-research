@@ -11,7 +11,10 @@ backward-compatible features, upstream protocol adaptations, and fixes.
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-10-15
+## [0.4.1] - 2026-10-15
+
+The v0.4.0 tag did not publish packages: its pinned Rust 1.88 Clippy check stopped the workflow.
+This release includes the same features with that test-format fix.
 
 ### Security
 

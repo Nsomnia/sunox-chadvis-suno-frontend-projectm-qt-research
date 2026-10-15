@@ -313,7 +313,7 @@ mod tests {
         .unwrap();
         let report = r#"{"streams":[{"codec_type":"audio","codec_name":"aac","sample_rate":"44100","channels":1}],"format":{"format_name":"mov,mp4,m4a","duration":"0.1"}}"#;
         let ffprobe = dir.path().join("probe");
-        std::fs::write(&ffprobe, format!("#!/bin/sh\nprintf '%s' '{}'\n", report)).unwrap();
+        std::fs::write(&ffprobe, format!("#!/bin/sh\nprintf '%s' '{report}'\n")).unwrap();
         std::fs::set_permissions(&ffprobe, std::fs::Permissions::from_mode(0o700)).unwrap();
         let ffmpeg = dir.path().join("remux");
         let args_file = dir.path().join("arguments");
