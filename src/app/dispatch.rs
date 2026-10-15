@@ -44,6 +44,10 @@ async fn dispatch_command(
 ) -> Result<(), CliError> {
     match command {
         Some(Commands::Create(args)) => commands::create::create(args, ctx).await,
+        Some(Commands::Speech(args)) => commands::create::speech(args, ctx).await,
+        Some(Commands::Simple(args)) => commands::create::simple(args, ctx).await,
+        Some(Commands::Sounds(args)) => commands::create::sounds(args, ctx).await,
+        Some(Commands::DownloadZip(args)) => commands::media::download_zip(args, ctx).await,
         Some(Commands::Download(args)) => commands::media::download(args, ctx).await,
         Some(Commands::Add(args)) => {
             commands::playlist::run(
@@ -134,6 +138,7 @@ async fn dispatch_command(
         },
         Some(Commands::Persona(args)) => commands::persona::run(args, ctx).await,
         Some(Commands::Voice(args)) => commands::voice::run(args, ctx).await,
+        Some(Commands::Album(args)) => commands::album::run(args, ctx).await,
         Some(Commands::Playlist(args)) => commands::playlist::run(args, ctx).await,
         Some(Commands::Config(args)) => commands::config::run(args, ctx).await,
         Some(Commands::AgentInfo) => commands::agent::agent_info(ctx).await,

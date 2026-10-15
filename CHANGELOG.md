@@ -11,6 +11,62 @@ backward-compatible features, upstream protocol adaptations, and fixes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-15
+
+### Security
+
+- Update Rustls to 0.23.46 for RUSTSEC-2026-0346, RUSTSEC-2026-0347,
+  RUSTSEC-2026-0348 and RUSTSEC-2026-0349; update quinn-proto to 0.11.18 for
+  RUSTSEC-2026-0338 through RUSTSEC-2026-0342 and its required RNG dependencies.
+
+### Changed
+
+- **Breaking:** Ordinary `download` and `clip download` now default to the song-video source.
+  They reuse a current video or generate a missing/stale video, then preserve the original
+  audio stream in M4A without re-encoding. Install FFmpeg and FFprobe for audio extraction;
+  saving the original MP4 with `--video` needs FFprobe. Missing local tools fail before rendering.
+- Select `--source official` explicitly for prepared MP3/M4A/WAV/MP4 exports that can consume
+  download allowance. Video-source failures never authorize or fall back to official export.
+  Existing `clip get-stems --download` and `download-zip` remain separate official exports and
+  may consume allowance. `--read-only` permits existing video/status reuse but never starts a render.
+- Video-source JSON returns records with `clip_id`, `path`, `source`, `format`,
+  `video_generated`, `audio_reencoded`, `source_media`, and `output_media`, rather than a
+  list of paths. Scripts that need the former official export behavior must select
+  `--source official`; video extraction does not add the MP3 ID3 lyrics supplied by that route.
+
+### Added
+
+- Connect per-song video generation and status polling, with account, ownership, source-state
+  and download-restriction checks. Inspect existing video status before rendering, reuse
+  completed URLs when clip metadata lags, and resume running jobs after a timeout without
+  submitting another generation request.
+- Add explicit `--source cdn` downloads for exact returned unencrypted MP3/M4A URLs. Reject
+  encoded playback media and unavailable formats without authorization, conversion or fallback.
+- Add v6 Speech Script/Describe, Agentic Simple with completed audio references and moderated
+  local image attachments, and account-gated Sounds one-shot/loop generation.
+- Add albums: list/read, create private drafts, convert an owned playlist into a new draft,
+  update metadata/type, add owned tracks and explicitly publish with exact result readback.
+- Add current Custom Model training-base discovery, shared-model listing and owned-model rename.
+- Add gated ZIP export preparation for MP3/M4A, preserving partial-success and format-substitution
+  details while validating and atomically saving the returned archive.
+
+### Fixed
+
+- Filter eligible v6 generation models before Agentic Simple automatic model selection; explicit
+  incompatible selectors still fail instead of silently switching models.
+- Exclude encrypted progressive M4A from native playback and direct audio download selection.
+- Preserve mutation identities, accepted resources and batch progress across partial failures;
+  keep uncertain submissions single-shot and expose inspection/recovery guidance.
+- Align agent-info, capability reporting, packaged agent skill and CLI help with the new defaults.
+
+### Validation
+
+- Live acceptance on one authorized owned song generated a video and extracted its AAC-LC
+  audio at approximately 192 kbps, 48 kHz, stereo with identical encoded audio packet hashes.
+  Download usage and generation credits were unchanged for that sample; this is not a guarantee
+  of universal or permanent quota exemption. Remaining new write flows have protocol/mock
+  coverage and are not claimed as live-verified.
+
 ## [0.3.4] - 2026-10-02
 
 ### Security

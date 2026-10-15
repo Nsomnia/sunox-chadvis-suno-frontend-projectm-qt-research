@@ -14,3 +14,6 @@ pub use submit::{create, extend};
 pub use transform::{
     concat, cover, crop, fade, overpaint, remaster, reuse, reverse, speed, stems, underpaint,
 };
+
+mod new_modes;
+pub use new_modes::{simple, sounds, speech};

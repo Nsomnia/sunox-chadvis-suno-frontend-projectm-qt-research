@@ -7221,7 +7221,9 @@ async fn custom_model_create_preflights_every_source_then_posts_the_exact_contra
     let clip_ids = (1..=6)
         .map(|index| format!("clip-{index}"))
         .collect::<Vec<_>>();
-    let mut responses = vec![(200, billing_with_features(&["custom_models"]))];
+    let mut responses = vec![(200, billing_with_features(&["custom_models"])),
+        (200, serde_json::json!({"flags":{"custom-model-ui":true}}).to_string()),
+        (200, serde_json::json!({"options":[{"base_model":"chirp-fenix","name":"v5.5","is_default":true}]}).to_string())];
     responses.extend(
         clip_ids
             .iter()
@@ -7238,27 +7240,27 @@ async fn custom_model_create_preflights_every_source_then_posts_the_exact_contra
     let client = server.client();
 
     let created = client
-        .create_custom_model(&clip_ids, "My Sound", true)
+        .create_custom_model(&clip_ids, "My Sound", true, None)
         .await
         .expect("create custom model");
 
     assert_eq!(created.id, "custom-1");
     assert_eq!(created.extra["training_eta_s"], 120);
     let requests = server.captured_all().await;
-    assert_eq!(requests.len(), 10);
+    assert_eq!(requests.len(), 12);
     assert_eq!(requests[0].path, "/api/billing/info/");
     for (index, clip_id) in clip_ids.iter().enumerate() {
-        assert_eq!(requests[index + 1].method, "GET");
-        assert_eq!(requests[index + 1].path, format!("/api/clip/{clip_id}"));
+        assert_eq!(requests[index + 3].method, "GET");
+        assert_eq!(requests[index + 3].path, format!("/api/clip/{clip_id}"));
     }
-    assert_eq!(requests[7].method, "POST");
-    assert_eq!(requests[7].path, "/api/custom-model/create/");
+    assert_eq!(requests[9].method, "POST");
+    assert_eq!(requests[9].path, "/api/custom-model/create/");
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&requests[7].body).expect("create body"),
-        serde_json::json!({"clip_ids": clip_ids, "name": "My Sound"})
+        serde_json::from_str::<serde_json::Value>(&requests[9].body).expect("create body"),
+        serde_json::json!({"clip_ids": clip_ids, "name": "My Sound", "base_model":"chirp-fenix"})
     );
-    assert_eq!(requests[8].path, "/api/custom-model/pending/");
-    assert_eq!(requests[9].path, "/api/billing/info/");
+    assert_eq!(requests[10].path, "/api/custom-model/pending/");
+    assert_eq!(requests[11].path, "/api/billing/info/");
 }
 
 #[tokio::test]
@@ -7336,7 +7338,7 @@ async fn custom_model_create_api_rejects_duplicate_sources_before_network_access
     let clip_ids = vec!["clip-1".to_string(); 6];
 
     let error = client
-        .create_custom_model(&clip_ids, "My Sound", true)
+        .create_custom_model(&clip_ids, "My Sound", true, None)
         .await
         .expect_err("duplicate sources must fail at the API boundary");
 
@@ -7353,7 +7355,7 @@ async fn custom_model_create_requires_the_account_feature_before_clip_reads() {
         .collect::<Vec<_>>();
 
     let error = client
-        .create_custom_model(&clip_ids, "My Sound", true)
+        .create_custom_model(&clip_ids, "My Sound", true, None)
         .await
         .expect_err("missing Custom Model entitlement must fail closed");
 
@@ -7364,26 +7366,28 @@ async fn custom_model_create_requires_the_account_feature_before_clip_reads() {
 }
 
 #[tokio::test]
-async fn custom_model_create_requires_explicit_ui_availability_confirmation() {
+async fn custom_model_create_requires_live_ui_gate_even_with_attestation() {
     let billing = billing_with_features(&["custom_models"]);
-    let server = MockServer::json(&billing).await;
+    let server = MockServer::response_sequence(vec![
+        (200, billing),
+        (200, r#"{"flags":{"custom-model-ui":false}}"#.into()),
+    ])
+    .await;
     let client = server.client();
     let clip_ids = (1..=6)
         .map(|index| format!("clip-{index}"))
         .collect::<Vec<_>>();
 
     let error = client
-        .create_custom_model(&clip_ids, "My Sound", false)
+        .create_custom_model(&clip_ids, "My Sound", false, None)
         .await
         .expect_err("missing UI availability confirmation must fail closed");
 
-    assert!(
-        matches!(error, CliError::Config(message) if message.contains("custom-model-ui") && message.contains("--confirm-ui-available"))
-    );
+    assert!(matches!(error, CliError::Config(message) if message.contains("custom-model-ui")));
     let requests = server.captured_all().await;
     assert_eq!(
         requests.len(),
-        1,
+        2,
         "gate uncertainty must stop before clip reads"
     );
     assert_eq!(requests[0].path, "/api/billing/info/");
@@ -8145,14 +8149,19 @@ async fn prompt_image_lost_2xx_body_is_ambiguous_without_replay() {
 }
 
 #[tokio::test]
-async fn legacy_video_generation_fails_closed_without_a_proven_clip_eligibility_seam() {
+async fn song_video_generation_submits_once_without_body_then_polls() {
     let billing = billing_with_features(&["generate_song_video"]);
     let source = complete_clip_fixture("clip-1", None, None);
-    let server = MockServer::json_sequence(&[&billing, &source]).await;
-    let client = server.client();
-
-    let error = crate::workflow::visual::generate_video_and_wait(
-        &client,
+    let server = MockServer::json_sequence(&[
+        &billing,
+        &source,
+        "{}",
+        r#"{"status":"processing"}"#,
+        r#"{"status":"complete","video_url":"https://cdn.example/clip-1.mp4"}"#,
+    ])
+    .await;
+    let status = crate::workflow::visual::generate_video_and_wait(
+        &server.client(),
         "clip-1",
         super::PollingOptions {
             timeout: Duration::from_secs(1),
@@ -8160,14 +8169,139 @@ async fn legacy_video_generation_fails_closed_without_a_proven_clip_eligibility_
         },
     )
     .await
-    .expect_err("unproven ownership/download eligibility must stop submit");
-
-    assert!(
-        matches!(error, CliError::Config(message) if message.contains("ownership") && message.contains("eligibility") && message.contains("status"))
+    .unwrap();
+    assert_eq!(
+        status.video_url.as_deref(),
+        Some("https://cdn.example/clip-1.mp4")
     );
     let requests = server.captured_all().await;
-    assert_eq!(requests.len(), 2);
-    assert!(requests.iter().all(|request| request.method == "GET"));
+    assert_eq!(requests.len(), 5);
+    assert_eq!(requests[2].method, "POST");
+    assert_eq!(requests[2].path, "/api/video/generate/clip-1/");
+    assert!(requests[2].body.is_empty());
+    for request in &requests[3..] {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/api/video/generate/clip-1/status/");
+    }
+}
+
+#[tokio::test]
+async fn song_video_generation_denies_unknown_ownership_and_download_restrictions() {
+    for patch in [
+        serde_json::json!({"user_id":null}),
+        serde_json::json!({"user_id":"another-user"}),
+        serde_json::json!({"download_disabled_reason":"restricted"}),
+        serde_json::json!({"download_disabled_reason":true}),
+        serde_json::json!({"is_trashed":true}),
+        serde_json::json!({"status":"processing"}),
+    ] {
+        let billing = billing_with_features(&["generate_song_video"]);
+        let mut source: serde_json::Value =
+            serde_json::from_str(&complete_clip_fixture("clip-1", None, None)).unwrap();
+        source
+            .as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        let source = source.to_string();
+        let server = MockServer::json_sequence(&[&billing, &source]).await;
+        crate::workflow::visual::generate_video_and_wait(
+            &server.client(),
+            "clip-1",
+            super::PollingOptions {
+                timeout: Duration::from_secs(1),
+                interval: Duration::from_millis(1),
+            },
+        )
+        .await
+        .unwrap_err();
+        let requests = server.captured_all().await;
+        assert_eq!(requests.len(), 2);
+        assert!(requests.iter().all(|r| r.method == "GET"));
+    }
+}
+
+#[tokio::test]
+async fn song_video_remix_contest_override_requires_explicit_false_session_flag() {
+    for flag in [
+        serde_json::Value::Null,
+        serde_json::json!(true),
+        serde_json::json!(false),
+    ] {
+        let billing = billing_with_features(&["generate_song_video"]);
+        let mut source: serde_json::Value =
+            serde_json::from_str(&complete_clip_fixture("clip-1", None, None)).unwrap();
+        source["download_disabled_reason"] = serde_json::json!("remix_contest");
+        let session =
+            serde_json::json!({"flags":{"remix-contest-disable-downloads":flag}}).to_string();
+        let source = source.to_string();
+        let mut responses = vec![billing.as_str(), source.as_str(), session.as_str()];
+        if flag == false {
+            responses.extend([
+                "{}",
+                r#"{"status":"complete","video_url":"https://cdn.example/video.mp4"}"#,
+            ]);
+        }
+        let server = MockServer::json_sequence(&responses).await;
+        let result = crate::workflow::visual::generate_video_and_wait(
+            &server.client(),
+            "clip-1",
+            super::PollingOptions {
+                timeout: Duration::from_secs(1),
+                interval: Duration::from_millis(1),
+            },
+        )
+        .await;
+        assert_eq!(result.is_ok(), flag == false);
+        let requests = server.captured_all().await;
+        assert_eq!(
+            requests.iter().filter(|r| r.method == "POST").count(),
+            usize::from(flag == false)
+        );
+    }
+}
+
+#[tokio::test]
+async fn song_video_submission_uncertainty_never_replays_and_poll_errors_preserve_clip() {
+    for status in [307, 500] {
+        let server = MockServer::response_sequence(vec![
+            (200, billing_with_features(&["generate_song_video"])),
+            (200, complete_clip_fixture("clip-1", None, None)),
+            (status, "{}".into()),
+        ])
+        .await;
+        let error = crate::workflow::visual::generate_video_and_wait(
+            &server.client(),
+            "clip-1",
+            super::PollingOptions {
+                timeout: Duration::from_secs(1),
+                interval: Duration::from_millis(1),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.error_code(), "ambiguous_mutation");
+        assert_eq!(server.captured_all().await.len(), 3);
+    }
+    let server = MockServer::response_sequence(vec![
+        (200, billing_with_features(&["generate_song_video"])),
+        (200, complete_clip_fixture("clip-1", None, None)),
+        (200, "{}".into()),
+        (400, r#"{"detail":"temporarily unavailable"}"#.into()),
+    ])
+    .await;
+    let error = crate::workflow::visual::generate_video_and_wait(
+        &server.client(),
+        "clip-1",
+        super::PollingOptions {
+            timeout: Duration::from_secs(1),
+            interval: Duration::from_millis(1),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.error_code(), "ambiguous_mutation");
+    assert!(error.to_string().contains("clip-1"));
+    assert_eq!(server.captured_all().await.len(), 4);
 }
 
 #[tokio::test]
@@ -9358,3 +9492,6 @@ async fn lyrics_rewrite_normalizes_cowrite_markers_and_limits_unicode_title() {
     assert!(body["create_session_token"].is_null());
     assert!(!request.body.contains("ignored-legacy-token"));
 }
+
+#[path = "new_protocol_tests.rs"]
+mod new_protocol_tests;

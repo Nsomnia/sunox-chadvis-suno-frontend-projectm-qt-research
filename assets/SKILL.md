@@ -1,6 +1,6 @@
 ---
 name: sunox
-description: Generate AI music from the terminal using the `sunox` CLI. Use when user asks to "generate a song", "make music", "create AI music", "make a track", "generate audio", or wants to programmatically use Suno web workflows for custom lyrics, tags, voice personas, playlists, covers, remasters, speed/reverse/crop/fade edits, or generation-backed stems. Also use when downloading Suno songs (prepared MP3 auto-embeds lyrics; explicit m4a/wav/opus supported). Run `sunox agent-info` for the static machine contract and authenticated `sunox capabilities` for the current account. NOT for writing song prompts/lyrics without generating audio.
+description: Generate AI music from the terminal using the `sunox` CLI. Use when user asks to "generate a song", "make music", "create AI music", "make a track", "generate audio", or wants to programmatically use Suno web workflows for custom lyrics, tags, voice personas, playlists, covers, remasters, speed/reverse/crop/fade edits, or generation-backed stems. Also use when downloading Suno songs (default video audio extraction as M4A; explicit official MP3/M4A/WAV exports may consume allowance; opus retired). Run `sunox agent-info` for the static machine contract and authenticated `sunox capabilities` for the current account. NOT for writing song prompts/lyrics without generating audio.
 ---
 
 # sunox CLI
@@ -10,7 +10,7 @@ Generate AI music from your terminal using direct Suno web workflows, including 
 ## When to use
 
 - User wants to **generate** AI music programmatically through the sunox CLI
-- User wants to **download** Suno songs (default MP3 auto-embeds USLT + SYLT lyrics into ID3 tags; explicit m4a/wav/opus supported)
+- User wants to **download** Suno songs (default video audio as M4A; allowance exports require explicit --source official; opus retired)
 - User wants to **batch generate**, **script**, or **integrate** Suno into a music workflow
 - User mentions Suno, AI music generation, or wants to control Suno parameters from the terminal
 
@@ -74,8 +74,8 @@ Agents should not pass --parallel or disable `serial_mutations` unless the user
 explicitly asks to allow same-account concurrent writes.
 For an audit or inspection that must not write, pass global `--read-only`; it
 blocks write requests before submission, disables timed-lyrics augmentation,
-and refuses missing WAV/OPUS conversion. Prepared downloads remain possible and
-may still consume plan allowance.
+and refuses missing WAV conversion. Official downloads require an already unlocked source.
+Explicit `--source cdn` only saves an available unencrypted URL and never authorizes or converts.
 
 Risk control defaults for agents:
 
@@ -171,7 +171,7 @@ unless the user only asked to submit. `sunox clip crop` and `sunox clip fade`
 already wait for the resulting clip to complete, so a successful response from
 either command does not require another `clip wait`.
 
-For simple audio analysis, prefer existing media by reading `audio_url` from
+For simple audio analysis, prefer existing media by reading `playback_url` from
 `sunox clip info <clip_id> --json`; do not download unless a file is needed.
 `clip info`
 also returns song-page context such as attribution, comments,
@@ -182,10 +182,15 @@ includes `supplemental_errors`; auth and rate-limit errors still abort
 normally. Do not trigger new Suno generation/export work just to inspect audio.
 Reserve WAV or generation-backed stems for explicit deep-analysis, lossless,
 or stem requests. Studio functionality is outside this CLI's scope.
-The current CLI download defaults to Suno's official prepared MP3 endpoint and
-supports `--format mp3|m4a|wav|opus`; `--video` uses `clip.video_url` when
-present. WAV/OPUS are GET-first; add `--no-convert` to forbid the conversion
-POST when no file exists. Downloads may be plan-metered.
+The CLI download defaults to video audio extraction into M4A, reusing an existing video or
+generating a missing/stale video unless --read-only is set. Requires FFprobe and FFmpeg.
+Never choose an allowance-consuming export without explicit user instruction: only
+`--source official` uses the official prepared MP3 endpoint and supports `--format mp3|m4a|wav`;
+with that source `--video` prefers prepared MP4. OPUS is retired.
+WAV prefers preparation with legacy GET/conversion fallback; add `--no-convert` to forbid conversion.
+Official downloads may consume allowance. `--source cdn` uses only an exact available plaintext
+M4A/MP3 URL, never authorizes, converts, or falls back to official export. Encrypted `encoding`
+resources are rejected; `playback_url` excludes them too. Do not promise an unrestricted CDN export.
 `sunox clip stems` performs generation-backed stems extraction; it is not the
 same as Suno Web Pro Get Stems export.
 
@@ -233,7 +238,7 @@ sunox create --title "Rainy Morning" "a chill lo-fi track about rainy mornings"
 # Use one existing clip as loose inspiration
 sunox clip inspire <clip_id> --title "New Song" --tags "garage pop" --lyrics-file lyrics.txt --audio-influence 60
 
-# Wait for returned clip IDs, then download completed MP3s
+# Wait for returned clip IDs, then download completed audio
 sunox clip wait <clip_id_1> <clip_id_2>
 sunox clip download <clip_id_1> <clip_id_2> --output ./songs/
 
@@ -294,7 +299,7 @@ sunox playlist dislike <playlist_id>
 sunox playlist delete <playlist_id> -y
 
 # Cover or remaster an existing clip
-sunox clip cover <clip_id> --tags "jazz, smooth piano" --model v5.5
+sunox clip cover <clip_id> --tags "jazz, smooth piano" --model v6
 sunox clip remaster <clip_id> --model v6
 
 # Reuse source lyrics/styles or add the missing musical layer
@@ -327,10 +332,10 @@ sunox clip cover-art apply-video <clip_id> <batch_id> <video_upload_id>
 # Word-level timed lyrics (LRC format for synced display)
 sunox clip timed-lyrics <clip_id> --lrc > song.lrc
 
-# Download with auto-embedded synced lyrics by default, or request a format
+# Download original video audio by default, or explicitly request an official export
 sunox download <clip_id_1> <clip_id_2> --output ./songs/
-sunox clip download <clip_id> --format wav --output ./songs/
-sunox clip download <clip_id> --format wav --no-convert --output ./songs/
+sunox clip download <clip_id> --source official --format wav --output ./songs/
+sunox clip download <clip_id> --source official --format wav --no-convert --output ./songs/
 
 # Manage clips
 sunox clip set <clip_id> --title "New Title" --lyrics-file updated.txt
@@ -410,7 +415,7 @@ key emitted in `capabilities` are accepted by `--model`.
   preserves its upstream bare Clip object, whose ID is `.data.id`. Table output uses the parsed
   clip view.
 - Suno write commands are account-scoped serial by default; do not pass --parallel or disable `serial_mutations` unless the user explicitly allows same-account concurrent writes.
-- For simple audio analysis, prefer clip `audio_url` media from `sunox clip info <clip_id> --json`; use the prepared download command only when a local file is needed. `clip info` also includes `attribution`, `comments`, `remix_count`, `similar_clips`, and non-fatal `supplemental_errors`. Reserve explicit formats, generation-backed stems, or Pro video for requests that name that format or need deep/lossless analysis. Studio functionality is outside this CLI's scope.
+- For simple audio analysis, use a usable plaintext `playback_url` from `sunox clip info <clip_id> --json` when available. Protected clips may have no such URL. When a local file is needed, use the default video-source M4A download; existing videos/jobs are reused before generation. Official exports require an explicit allowance-download request. `clip info` also includes `attribution`, `comments`, `remix_count`, `similar_clips`, and non-fatal `supplemental_errors`. Reserve lossless exports and generation-backed stems for explicit requests. Studio functionality is outside this CLI's scope.
 - A transport/body interruption after generation, Remaster, conversion, or a submitted edit can return `ambiguous_mutation`. Never blindly replay it; inspect `error.details.operation_id`, `recovery.resumable`, and read-only inspection commands first.
 - `clip cover-art image` and `clip cover-art video` discover model categories, allowed durations, and cost at runtime, then return a two-result batch. They require exact authenticated clip ownership, explicit non-trashed state, the enabled `generate_cover_art` action, and the matching plan feature. They never auto-apply a candidate. Use `status`, `pending`, and `history` for recovery, then explicitly select `apply-image` or `apply-video` with the batch ID; apply first proves that the completed result belongs to the selected clip. A lost submit response is never replayed because the batch protocol exposes no client idempotency key.
 - Download output directories are created automatically. Do not pass `--force` unless the user explicitly requests replacing an existing local download; ordinary downloads refuse to overwrite a matching file.
@@ -441,13 +446,13 @@ sunox clip info <clip_id> --json | jq '.data.audio_url'
 
 ## Common workflows
 
-### Generate and download a finished MP3 with synced lyrics
+### Generate and download original video audio as M4A
 
 ```bash
 sunox create --title "Foo" --tags "ambient, piano" --lyrics-file foo.txt
 sunox clip wait <clip_id>
 sunox clip download <clip_id> --output ./out/
-# → ./out/foo-<clipid8>.mp3 with USLT + SYLT lyrics embedded
+# → ./out/foo-<clipid8>.m4a (original video audio, no re-encoding)
 ```
 
 ### Resume / continue a clip
@@ -462,7 +467,7 @@ Use `clip concat` with a source that has original Suno generation history. Do
 not assume crop, fade, reverse, or other edited results are valid inputs: Suno
 can reject them with `Bad history.`
 
-### Batch download yesterday's songs as JSON, then pull MP3s
+### Batch download yesterday's songs as JSON, then download M4A audio
 
 ```bash
 ids=$(sunox clip list --json | jq -r '.data.clips[].id')
@@ -535,3 +540,36 @@ sunox clip download $ids --output ./archive/
 - `sunox config set <key> <value>` persists local defaults; `SUNOX_*` environment variables override persisted config.
 - When the CLI returns `schema_drift` (Suno changed its web schema), run `sunox update` to pull the latest binary from GitHub Releases.
 - When unsure about flags, run `sunox <command> --help` or `sunox agent-info`.
+
+
+## Current creation and album workflows (October 2026)
+
+- `sunox speech --script <text>` or `--script-file <path>` generates Speech with `chirp-goose`; `--tone`, `--vocal`, `--no-music` and `--variety 0..4` apply to the current form. `--describe <idea>` uses the separate Speech Describe contract; tone/music/Variety overrides are Script-only.
+- `sunox simple <instruction> --audio-ref <clip_id> --image-file <path>` uses the current Agentic Simple task. Repeat references within live account limits. `--image-id <upload_uuid>` reuses a completed moderated upload. `--lyrics` and `--styles` are attachments, not replacements for the instruction. Video and MIDI inputs remain unavailable pending their own protocol verification.
+- `sunox sounds <description>` creates a one-shot. Add `--loop`, optional `--bpm` and `--key` for loops. A paid plan and current create-sounds gate are required.
+- All three creation commands support the same token/provider/Browser Bridge options as create, hold the same serial mutation lock, and return the submitted clip envelope. Run `clip wait` before consuming the new results.
+- `models custom bases` discovers current training bases; `train --base-model <key>` selects one. Training requires rights confirmation and the live custom-model-ui gate. The legacy --confirm-ui-available flag does not override a disabled gate. `models custom shared` reads shared-model discovery; `models custom rename <id> --name <name>` changes an owned model and verifies billing readback. Shared-model generation and permission-grant writes are not implemented.
+- `album list/info/create/set/add` manage album drafts on Playlist storage. `album create --from-playlist <id>` creates a new draft. `album publish <id> [--use-album-cover]` can publish its tracks and notify followers: perform it only when explicitly requested. Never use ordinary playlist visibility as album publication.
+- `download-zip <clip_ids> [--format m4a|mp3]` checks the live session gate and submits one preparation request with a batch ID, without individual authorization calls. It may consume download allowance; preserve failed_clips/substituted_clips warnings and batch/recovery context. It never extracts the archive. --read-only prevents ZIP preparation.
+
+### Generate an existing song's video
+
+`sunox clip generate-video <clip_id> --timeout 180 --json` checks the live plan feature,
+exact source ownership, completion, non-trash state and download restrictions; submits the bodyless
+song-video POST once, then polls status. It returns a video_url without authorizing or downloading.
+After any ambiguous result, use `clip video-status <id> --wait --json` rather than resubmitting.
+Video generation and official video download are separate operations. Direct access and accounting
+must be verified for the returned URL/account; do not infer a universal quota exemption.
+
+### Download audio from a song video
+
+- `download <ids> --source video --read-only` copies an existing video audio track into M4A.
+- Missing/stale videos are generated automatically unless `--read-only`; `--video-timeout 180` bounds the wait.
+- Before rendering, inspect status: reuse completed URLs even if clip metadata lags, and poll existing jobs.
+  Status errors or unknown states never trigger another POST; retry after timeout resumes existing work.
+- `--generate-video` remains a compatibility flag. Only explicit `--source official` permits allowance exports.
+- `--source video --video` saves the MP4 instead. FFprobe is required; extraction also requires FFmpeg.
+- Local dependency/destination checks precede generation. Video source never sends download authorization,
+  never falls back to official export and never transcodes. JSON includes actual source/output quality.
+- After partial/ambiguous failure inspect generated_video_clip_ids and clip video-status; retry existing
+  media with `--read-only`. Report quota observations per tested account rather than a universal exemption.

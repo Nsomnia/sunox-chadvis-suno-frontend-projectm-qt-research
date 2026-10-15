@@ -1,6 +1,7 @@
 //! Clap argument schema grouped by user-facing command area.
 
 mod agent;
+mod album;
 mod auth;
 mod browser_extension;
 mod clip;
@@ -12,6 +13,7 @@ mod lyrics_editor;
 mod lyrics_project;
 mod media;
 mod models;
+mod new_create;
 mod persona;
 mod playlist;
 mod update;
@@ -20,6 +22,7 @@ mod wait;
 
 pub use crate::api::types::{RemasterStyleProfile, RemasterVariation};
 pub use agent::{InstallSkillArgs, SkillTarget};
+pub use album::{AlbumArgs, AlbumCommand};
 pub use auth::AuthArgs;
 pub use browser_extension::InstallBrowserExtensionArgs;
 pub use clip::{
@@ -42,10 +45,14 @@ pub use lyrics_editor::{
     LYRICS_MASHUP_DEFAULT_TIMEOUT_SECS, LyricsMashupArgs, LyricsMashupStatusArgs, LyricsRewriteArgs,
 };
 pub use lyrics_project::{LyricsCommand, LyricsProjectCommand, LyricsProjectsArgs};
-pub use media::{DownloadArgs, DownloadFormat, TimedLyricsArgs, UploadArgs, UploadStatusArgs};
+pub use media::{
+    DownloadArgs, DownloadFormat, DownloadRoute, DownloadZipArgs, TimedLyricsArgs, UploadArgs,
+    UploadStatusArgs,
+};
 pub use models::{
     CustomModelCommand, CustomModelsArgs, ModelsArgs, ModelsCommand, RemasterModel, VocalGender,
 };
+pub use new_create::{ChallengeArgs, SimpleArgs, SoundsArgs, SpeechArgs};
 pub use persona::{
     PersonaArgs, PersonaClipsArgs, PersonaCommand, PersonaCreateArgs, PersonaDeleteArgs,
     PersonaInfoArgs, PersonaListArgs, PersonaListKind, PersonaLoveArgs, PersonaPublishArgs,
@@ -81,7 +88,7 @@ pub struct Cli {
 
     /// Override a configuration value for this invocation.
     ///
-    /// Use `key=value`, for example `-c default_model=v5.5` or
+    /// Use `key=value`, for example `-c default_model=v6` or
     /// `-c output_dir=./songs`.
     #[arg(short = 'c', long = "config", value_name = "key=value", global = true)]
     pub config_overrides: Vec<String>,
@@ -108,8 +115,18 @@ pub enum Commands {
     /// Generate music from a prompt or custom lyrics
     Create(CreateArgs),
 
+    /// Create spoken audio with optional background music
+    Speech(SpeechArgs),
+    /// Create with the current Agentic Simple workflow and references
+    Simple(SimpleArgs),
+    /// Create a one-shot sound or loop
+    Sounds(SoundsArgs),
+
     /// Download completed song audio
     Download(DownloadArgs),
+
+    /// Download up to 200 completed songs as a validated ZIP archive
+    DownloadZip(DownloadZipArgs),
 
     /// Add clip(s) to a playlist
     Add(AddArgs),
@@ -128,6 +145,9 @@ pub enum Commands {
 
     /// Manage playlists
     Playlist(PlaylistArgs),
+
+    /// Manage album drafts and explicit publication
+    Album(AlbumArgs),
 
     /// Show credit balance and plan info
     Credits,
@@ -169,10 +189,36 @@ pub enum Commands {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, ClipCommand, Commands, CustomModelCommand, ModelsCommand, RemasterStyleProfile,
-        RemasterVariation, StemGroup, StemMode, VoiceCommand,
+        Cli, ClipCommand, Commands, CustomModelCommand, DownloadRoute, ModelsCommand,
+        RemasterStyleProfile, RemasterVariation, StemGroup, StemMode, VoiceCommand,
     };
     use clap::Parser;
+
+    #[test]
+    fn download_allowance_source_requires_explicit_selection() {
+        for prefix in [vec!["sunox", "download"], vec!["sunox", "clip", "download"]] {
+            for (options, expected) in [
+                (vec![], DownloadRoute::Video),
+                (vec!["--format", "wav"], DownloadRoute::Video),
+                (vec!["--video-timeout", "180"], DownloadRoute::Video),
+                (vec!["--source", "official"], DownloadRoute::Official),
+            ] {
+                let cli =
+                    Cli::try_parse_from(prefix.iter().copied().chain(["clip-a"]).chain(options))
+                        .unwrap();
+                let args = match cli.command.unwrap() {
+                    Commands::Download(args) => args,
+                    Commands::Clip(clip) => match clip.command {
+                        ClipCommand::Download(args) => args,
+                        _ => panic!("expected download"),
+                    },
+                    _ => panic!("expected download"),
+                };
+                assert_eq!(args.source, expected);
+            }
+        }
+        assert_eq!(DownloadRoute::default(), DownloadRoute::Video);
+    }
 
     #[test]
     fn external_token_provider_is_explicit_and_requires_a_token() {

@@ -57,7 +57,121 @@ struct DownloadFileOptions<'a> {
 }
 
 pub async fn download(args: DownloadArgs, ctx: &AppContext) -> Result<(), CliError> {
-    download_with_source(args, DownloadSource::EachTarget, ctx).await
+    if (args.generate_video || args.video_timeout.is_some())
+        && args.source != crate::cli::DownloadRoute::Video
+    {
+        return Err(CliError::Config(
+            "--generate-video and --video-timeout require --source video".into(),
+        ));
+    }
+    match args.source {
+        crate::cli::DownloadRoute::Cdn => download_cdn(args, ctx).await,
+        crate::cli::DownloadRoute::Video => super::video_download::download(args, ctx).await,
+        crate::cli::DownloadRoute::Official => {
+            download_with_source(args, DownloadSource::EachTarget, ctx).await
+        }
+    }
+}
+
+/// This path performs only account reads and credential-free media GETs. Keep it
+/// separate from export authorization, conversion and aligned-lyrics generation.
+async fn download_cdn(args: DownloadArgs, ctx: &AppContext) -> Result<(), CliError> {
+    if args.video
+        || matches!(
+            args.format,
+            Some(DownloadFormat::Wav | DownloadFormat::Opus)
+        )
+    {
+        return Err(CliError::Config(
+            "--source cdn supports only available MP3/M4A audio, without conversion".into(),
+        ));
+    }
+    ensure_clip_ids(&args.ids)?;
+    let ids = deduplicate_clip_ids(&args.ids);
+    let client = ctx.client().await?;
+    let clips = tasks::require_found_clips(&ids, client.get_clips(&ids).await?)?;
+    let directory = args.output.as_deref().unwrap_or(&ctx.config.output_dir);
+    let mut plan = Vec::new();
+    let mut destinations = HashSet::new();
+    for clip in &clips {
+        if clip.status != "complete" || clip.is_trashed == Some(true) {
+            return Err(CliError::Config(format!(
+                "CDN source {} must be complete and not trashed",
+                clip.id
+            )));
+        }
+        let formats: &[DownloadFormat] = match args.format {
+            Some(DownloadFormat::Mp3) => &[DownloadFormat::Mp3],
+            Some(DownloadFormat::M4a) => &[DownloadFormat::M4a],
+            None => &[DownloadFormat::M4a, DownloadFormat::Mp3],
+            _ => unreachable!("unsupported CDN formats rejected before account reads"),
+        };
+        let (format, url) = formats.iter().find_map(|format| {
+            clip.direct_audio_url(format.extension()).map(|url| (*format, url))
+        }).ok_or_else(|| CliError::Diagnostic {
+            code: "cdn_audio_unavailable",
+            message: format!(
+                "clip {} has no unencrypted direct audio URL for the requested format; CDN mode did not authorize, convert, or fall back to official export", clip.id
+            ),
+            details: serde_json::json!({
+                "clip_id": clip.id,
+                "source": "cdn",
+                "requested_format": args.format.map(DownloadFormat::extension),
+                "authorization_post_sent": false,
+                "download_started": false,
+                "recovery": "Use an available plain audio URL, or explicitly choose --source official if download allowance may be consumed. CDN mode cannot export encrypted playback media."
+            }),
+        })?;
+        let destination =
+            media::download::planned_clip_download_path(clip, directory, format.extension());
+        if !destinations.insert(destination.clone()) {
+            return Err(CliError::Download(format!(
+                "CDN download destination collision: {}",
+                destination.display()
+            )));
+        }
+        plan.push((clip, format, url));
+    }
+    for (clip, format, _) in &plan {
+        media::download::preflight_clip_download(clip, directory, format.extension(), args.force)
+            .await?;
+    }
+    let mut completed = Vec::new();
+    let mut paths = Vec::new();
+    for (index, (clip, format, url)) in plan.iter().enumerate() {
+        let path = media::download::download_clip_url_direct(
+            clip,
+            directory,
+            url,
+            format.extension(),
+            args.force,
+            ctx.quiet,
+        )
+        .await
+        .map_err(|error| {
+            partial_download_error(
+                &completed,
+                &clip.id,
+                None,
+                &remaining_clip_ids(&clips[index + 1..]),
+                &[],
+                &[],
+                error,
+            )
+        })?;
+        if !ctx.quiet {
+            eprintln!("Downloaded from CDN: {path}");
+        }
+        completed.push(CompletedDownload {
+            clip_id: clip.id.clone(),
+            path: path.clone(),
+        });
+        paths.push(path);
+    }
+    if matches!(ctx.fmt, OutputFormat::Json) {
+        output::json::success(&paths);
+    }
+    Ok(())
 }
 
 pub(super) async fn download_with_shared_source(
@@ -976,6 +1090,141 @@ fn timed_lyrics_render(
     })
 }
 
+pub async fn download_zip(
+    args: crate::cli::DownloadZipArgs,
+    ctx: &AppContext,
+) -> Result<(), CliError> {
+    if args.ids.is_empty()
+        || args.ids.len() > 200
+        || args.ids.iter().any(|id| id.trim().is_empty())
+        || args
+            .ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != args.ids.len()
+    {
+        return Err(CliError::Config(
+            "ZIP requires 1..200 distinct clip IDs".into(),
+        ));
+    }
+    let directory = args.output.as_deref().unwrap_or(&ctx.config.output_dir);
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    for id in &args.ids {
+        hash.update(id.as_bytes());
+        hash.update([0]);
+    }
+    hash.update(args.format.extension().as_bytes());
+    let batch_key = hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let identity = crate::api::types::Clip {
+        id: batch_key,
+        title: args.workspace_name.clone(),
+        status: "complete".into(),
+        model_name: String::new(),
+        audio_url: None,
+        video_url: None,
+        image_url: None,
+        created_at: String::new(),
+        is_trashed: Some(false),
+        is_download_unlocked: Some(true),
+        action_config: None,
+        play_count: 0,
+        upvote_count: 0,
+        metadata: Default::default(),
+        extra: Default::default(),
+    };
+    crate::media::download::preflight_clip_download(&identity, directory, "zip", args.force)
+        .await?;
+    let (client, _guard) = ctx.mutation_client().await?;
+    if !client
+        .session_info()
+        .await?
+        .flag_enabled("multi-select-download-zip")
+    {
+        return Err(CliError::Config(
+            "the current session does not enable multi-select-download-zip".into(),
+        ));
+    }
+    let clips = tasks::require_found_clips(&args.ids, client.get_clips(&args.ids).await?)?;
+    for clip in &clips {
+        if clip.status != "complete" || clip.is_trashed != Some(false) {
+            return Err(CliError::Config(
+                "ZIP sources must be complete and explicitly non-trashed".into(),
+            ));
+        }
+    }
+    let prepared = client
+        .prepare_download_zip(&args.ids, &args.workspace_name, args.format)
+        .await?;
+    let batch = prepared
+        .get("batch_id")
+        .filter(|value| !value.is_null())
+        .or_else(|| prepared.get("requested_batch_id"));
+    let url = prepared["download_url"]
+        .as_str()
+        .expect("validated ZIP URL");
+    let path =
+        crate::media::download_clip_url(&identity, directory, url, "zip", args.force, ctx.quiet)
+            .await
+            .map_err(|e| zip_stage_error(e, batch))?;
+    let substitutions = prepared
+        .get("substituted_clips")
+        .and_then(serde_json::Value::as_array);
+    let result = serde_json::json!({
+        "path":path,"requested_clip_ids":args.ids,
+        "batch_id":batch,
+        "failed_clips":prepared.get("failed_clips").and_then(serde_json::Value::as_array).cloned().unwrap_or_default(),
+        "requested_format":args.format.extension(),
+        "substituted_clips":substitutions.cloned().unwrap_or_default()
+    });
+    let mut warnings = Vec::new();
+    if substitutions.is_some_and(|items| !items.is_empty()) {
+        warnings.push(serde_json::json!({
+            "code":"download_format_substituted",
+            "message":"Suno substituted formats for some ZIP entries; inspect substituted_clips. Download individually to require an exact format.",
+            "substituted_clips":substitutions
+        }));
+    }
+    if result["failed_clips"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty())
+    {
+        warnings.push(serde_json::json!({
+            "code":"download_zip_partial",
+            "message":"The ZIP contains only the successful subset; inspect failed_clips before retrying.",
+            "failed_clips":result["failed_clips"]
+        }));
+    }
+    if warnings.is_empty() {
+        output::json::success(result);
+    } else {
+        if !ctx.quiet {
+            eprintln!(
+                "Warning: ZIP has skipped songs or substituted formats; inspect the result warnings."
+            );
+        }
+        output::json::success_with_warnings(result, warnings);
+    }
+    Ok(())
+}
+fn zip_stage_error(mut error: CliError, batch: Option<&serde_json::Value>) -> CliError {
+    if let CliError::AmbiguousMutation { details, .. } = &mut error {
+        if let Some(batch) = batch {
+            details["batch_id"] = batch.clone();
+        }
+        return error;
+    }
+    CliError::PartialMutation {
+        message: format!("ZIP workflow stopped: {error}"),
+        details: serde_json::json!({"operation":"download_zip","batch_id":batch,"failed":{"code":error.error_code(),"message":error.to_string(),"details":error.details()},"recovery":{"resumable":false}}),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -1142,7 +1391,7 @@ mod tests {
     }
 
     #[test]
-    fn default_audio_download_uses_official_mp3_route() {
+    fn official_audio_download_defaults_to_mp3() {
         assert_eq!(audio_download_format(None), DownloadFormat::Mp3);
     }
 

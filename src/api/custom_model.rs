@@ -16,6 +16,72 @@ const CUSTOM_MODEL_READBACK: PollingOptions = PollingOptions {
 };
 
 impl SunoClient {
+    pub async fn custom_model_bases(&self) -> Result<super::types::CustomModelBases, CliError> {
+        self.with_auth_retry(|| async {
+            self.read_json_with_transport_retry(self.get("/api/custom-model/bases/"))
+                .await
+        })
+        .await
+    }
+
+    pub async fn shared_custom_models(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<super::types::SharedCustomModels, CliError> {
+        self.with_auth_retry(|| async {
+            let mut query = vec![("limit", "100")];
+            if let Some(cursor) = cursor {
+                query.push(("cursor", cursor));
+            }
+            self.read_json_with_transport_retry(self.get("/api/custom-model/shared").query(&query))
+                .await
+        })
+        .await
+    }
+
+    pub async fn rename_custom_model(&self, id: &str, name: &str) -> Result<(), CliError> {
+        if id.trim().is_empty() || name.trim().is_empty() || name.chars().count() > 50 {
+            return Err(CliError::Config(
+                "model ID and a 1..50 character name are required".into(),
+            ));
+        }
+        let billing = self.billing_info().await?;
+        if !billing.models.iter().any(|model| {
+            model.extra.get("id").and_then(Value::as_str) == Some(id)
+                && model.badges.iter().any(|badge| badge == "custom")
+        }) {
+            return Err(CliError::Config(
+                "rename requires an owned Custom Model from current billing".into(),
+            ));
+        }
+        let spec = super::mutation::MutationSpec::new(
+            "custom_model_rename",
+            id,
+            vec!["sunox models --json".into()],
+        )
+        .with_context("model_id", id.to_owned());
+        self.send_mutation_once(
+            self.put_without_redirect("/api/custom-model/edit/")
+                .json(&serde_json::json!({"id":id,"name":name})),
+            &spec,
+        )
+        .await?;
+        let updated = self
+            .billing_info()
+            .await
+            .map_err(|error| spec.ambiguous("readback", error.error_code(), error.to_string()))?;
+        if !updated.models.iter().any(|model| {
+            model.extra.get("id").and_then(Value::as_str) == Some(id) && model.name == name
+        }) {
+            return Err(spec.ambiguous(
+                "readback",
+                "schema_drift",
+                "renamed model was not confirmed".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn pending_custom_models(&self) -> Result<PendingCustomModelsResponse, CliError> {
         self.with_auth_retry(|| async {
             let raw: Value = self
@@ -33,7 +99,8 @@ impl SunoClient {
         &self,
         clip_ids: &[String],
         name: &str,
-        confirm_ui_available: bool,
+        _confirm_ui_available: bool,
+        base_model: Option<&str>,
     ) -> Result<CustomModelCreateResponse, CliError> {
         validate_custom_model_create(clip_ids, name)?;
         let billing = self.billing_info().await?;
@@ -47,24 +114,71 @@ impl SunoClient {
                     .into(),
             ));
         }
-        if !confirm_ui_available {
-            return Err(CliError::Config(
-                "Suno Web currently also requires `custom-model-ui`; pass --confirm-ui-available only after confirming that the current account visibly exposes Custom Model training. The server remains authoritative for eligibility and charging"
-                    .into(),
-            ));
+        if !self.session_info().await?.flag_enabled("custom-model-ui") {
+            return Err(CliError::Config("the current Suno session does not enable custom-model-ui; an attestation cannot override this gate".into()));
         }
-        self.create_custom_model_after_ui_gate(clip_ids, name, CUSTOM_MODEL_READBACK)
-            .await
+        let bases = self.custom_model_bases().await?;
+        let eligible = bases
+            .options
+            .iter()
+            .filter(|base| info_model_available(&billing, &base.base_model))
+            .collect::<Vec<_>>();
+        let selected = if let Some(selector) = base_model {
+            let matches = eligible
+                .iter()
+                .filter(|base| {
+                    base.base_model == selector || base.name.eq_ignore_ascii_case(selector)
+                })
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return Err(CliError::Config(
+                    "base model must resolve to exactly one usable advertised training base".into(),
+                ));
+            }
+            Some(matches[0].base_model.as_str())
+        } else {
+            let defaults = eligible
+                .iter()
+                .filter(|base| base.is_default)
+                .collect::<Vec<_>>();
+            if defaults.len() == 1 {
+                Some(defaults[0].base_model.as_str())
+            } else if eligible.len() == 1 {
+                Some(eligible[0].base_model.as_str())
+            } else {
+                return Err(CliError::Config(
+                    "training base is absent or ambiguous; select --base-model".into(),
+                ));
+            }
+        };
+        self.create_custom_model_with_base_after_ui_gate(
+            clip_ids,
+            name,
+            selected,
+            CUSTOM_MODEL_READBACK,
+        )
+        .await
     }
 
-    /// Submit only after the public entry point has checked the live account
-    /// entitlement and received the caller's explicit Web-UI visibility
-    /// attestation. This stays inside the API module so normal CLI code cannot
-    /// bypass those preflights while no API read seam exposes the UI gate.
+    #[cfg(test)]
     pub(super) async fn create_custom_model_after_ui_gate(
         &self,
         clip_ids: &[String],
         name: &str,
+        polling: PollingOptions,
+    ) -> Result<CustomModelCreateResponse, CliError> {
+        self.create_custom_model_with_base_after_ui_gate(clip_ids, name, None, polling)
+            .await
+    }
+
+    /// Submit only after the public entry point has checked the live account
+    /// entitlement, live session gate and advertised usable training base.
+    /// This internal seam does not allow CLI callers to bypass those preflights.
+    async fn create_custom_model_with_base_after_ui_gate(
+        &self,
+        clip_ids: &[String],
+        name: &str,
+        base_model: Option<&str>,
         polling: PollingOptions,
     ) -> Result<CustomModelCreateResponse, CliError> {
         validate_custom_model_create(clip_ids, name)?;
@@ -107,7 +221,11 @@ impl SunoClient {
         }
 
         let operation_id = uuid::Uuid::new_v4().to_string();
-        let request = CreateCustomModelRequest { clip_ids, name };
+        let request = CreateCustomModelRequest {
+            clip_ids,
+            name,
+            base_model,
+        };
         let mutation = self
             .post_without_redirect("/api/custom-model/create/")
             .json(&request);
@@ -529,4 +647,10 @@ fn ambiguous_custom_model_archive(
     )
     .with_context("model_id", Value::String(model_id.to_string()))
     .into_error()
+}
+
+fn info_model_available(info: &BillingInfo, key: &str) -> bool {
+    info.models
+        .iter()
+        .any(|model| model.can_use && model.external_key == key)
 }

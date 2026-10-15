@@ -39,6 +39,11 @@ impl StagedDownload {
         self.commit()
     }
 
+    pub(crate) async fn validate_and_commit(self, ext: &str) -> Result<String, CliError> {
+        validate_media_file(self.path().to_path_buf(), ext.to_owned()).await?;
+        self.commit()
+    }
+
     fn commit(mut self) -> Result<String, CliError> {
         let temp_path = self
             .temp_path
@@ -68,6 +73,59 @@ pub async fn download_clip_url(
     stage_clip_url(clip, output_dir, url, ext, force, quiet)
         .await?
         .commit()
+}
+
+/// Fetch an already selected CDN URL once, without redirects or account credentials.
+pub async fn download_clip_url_direct(
+    clip: &Clip,
+    output_dir: &str,
+    url: &str,
+    ext: &str,
+    force: bool,
+    quiet: bool,
+) -> Result<String, CliError> {
+    stage_clip_url_direct(clip, output_dir, url, ext, force, quiet)
+        .await?
+        .commit()
+}
+
+pub(crate) async fn stage_clip_url_direct(
+    clip: &Clip,
+    output_dir: &str,
+    url: &str,
+    ext: &str,
+    force: bool,
+    quiet: bool,
+) -> Result<StagedDownload, CliError> {
+    stage_clip_url_with_limits(
+        clip,
+        output_dir,
+        url,
+        ext,
+        force,
+        quiet,
+        DOWNLOAD_IDLE_TIMEOUT,
+        DOWNLOAD_TOTAL_TIMEOUT,
+        MAX_DOWNLOAD_BYTES,
+        DownloadRedirects::Reject,
+    )
+    .await
+}
+
+/// A local producer writes only to an owned staging file; validation precedes atomic commit.
+pub(crate) async fn stage_local_output(
+    clip: &Clip,
+    directory: &str,
+    ext: &str,
+    force: bool,
+) -> Result<StagedDownload, CliError> {
+    preflight_clip_download(clip, directory, ext, force).await?;
+    let file = tempfile::NamedTempFile::new_in(directory)?;
+    Ok(StagedDownload {
+        temp_path: Some(file.into_temp_path()),
+        destination_path: planned_clip_download_path(clip, directory, ext),
+        force,
+    })
 }
 
 pub async fn stage_clip_url(
@@ -129,8 +187,15 @@ async fn stage_clip_url_with_idle_timeout(
         idle_timeout,
         DOWNLOAD_TOTAL_TIMEOUT,
         MAX_DOWNLOAD_BYTES,
+        DownloadRedirects::Follow,
     )
     .await
+}
+
+#[derive(Clone, Copy)]
+enum DownloadRedirects {
+    Follow,
+    Reject,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -144,6 +209,7 @@ async fn stage_clip_url_with_limits(
     idle_timeout: Duration,
     total_timeout: Duration,
     max_bytes: u64,
+    redirects: DownloadRedirects,
 ) -> Result<StagedDownload, CliError> {
     let filename = download_filename(clip, ext);
     let output_dir = Path::new(output_dir);
@@ -151,12 +217,23 @@ async fn stage_clip_url_with_limits(
     let path = planned_clip_download_path(clip, output_dir, ext);
     reject_existing_output(&path, force).await?;
 
-    let resp = tokio::time::timeout(idle_timeout, http::download_client()?.get(url).send())
+    let client = match redirects {
+        DownloadRedirects::Follow => http::download_client()?,
+        DownloadRedirects::Reject => http::download_no_redirect_client()?,
+    };
+    let resp = tokio::time::timeout(idle_timeout, client.get(url).send())
         .await
         .map_err(|_| CliError::Download(format!("download stalled before response: {filename}")))?
-        .map_err(CliError::Http)?
-        .error_for_status()
         .map_err(CliError::Http)?;
+    // error_for_status intentionally accepts 3xx. A direct download must reject those
+    // even when a redirect response happens to contain otherwise valid media bytes.
+    if matches!(redirects, DownloadRedirects::Reject) && !resp.status().is_success() {
+        return Err(CliError::Download(format!(
+            "direct CDN download returned HTTP {}; only successful direct responses are accepted: {filename}",
+            resp.status()
+        )));
+    }
+    let resp = resp.error_for_status().map_err(CliError::Http)?;
 
     let total = resp.content_length().unwrap_or(0);
     if total > max_bytes {
@@ -205,20 +282,7 @@ async fn stage_clip_url_with_limits(
         return Err(error);
     }
 
-    let validation_path = temp_file_path.to_path_buf();
-    let validation_ext = ext.to_owned();
-    let (validation_sender, validation_receiver) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("sunox-media-validation".into())
-        .spawn(move || {
-            let _ = validation_sender
-                .send(validate_downloaded_media(&validation_path, &validation_ext));
-        })
-        .map_err(CliError::Io)?;
-    let validation = tokio::time::timeout(MEDIA_VALIDATION_TIMEOUT, validation_receiver)
-        .await
-        .map_err(|_| CliError::Download(format!("media validation timed out: {filename}")))?
-        .map_err(|error| CliError::Download(format!("media validation task failed: {error}")))?;
+    let validation = validate_media_file(temp_file_path.to_path_buf(), ext.to_owned()).await;
     if let Err(error) = validation {
         pb.abandon_with_message("invalid media");
         return Err(error);
@@ -230,6 +294,23 @@ async fn stage_clip_url_with_limits(
         destination_path: path,
         force,
     })
+}
+
+async fn validate_media_file(
+    validation_path: PathBuf,
+    validation_ext: String,
+) -> Result<(), CliError> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("sunox-media-validation".into())
+        .spawn(move || {
+            let _ = sender.send(validate_downloaded_media(&validation_path, &validation_ext));
+        })
+        .map_err(CliError::Io)?;
+    tokio::time::timeout(MEDIA_VALIDATION_TIMEOUT, receiver)
+        .await
+        .map_err(|_| CliError::Download("media validation timed out".into()))?
+        .map_err(|error| CliError::Download(format!("media validation task failed: {error}")))?
 }
 
 /// Check the downloaded container before the staging file can replace a destination.
@@ -254,6 +335,34 @@ fn validate_downloaded_media(path: &Path, ext: &str) -> Result<(), CliError> {
         "m4a" | "mp4" => is_iso_media(&mut file, size, ext)?,
         "wav" => is_wave(&mut file, size)?,
         "opus" => is_ogg_opus(&mut file, size)?,
+        "zip" => {
+            let mut archive = zip::ZipArchive::new(file.try_clone()?)
+                .map_err(|error| CliError::Download(format!("invalid ZIP archive: {error}")))?;
+            let directory_start = archive.central_directory_start();
+            if archive.is_empty() || archive.len() > 1000 || directory_start > size {
+                false
+            } else {
+                let mut valid = true;
+                for index in 0..archive.len() {
+                    let entry = archive.by_index_raw(index).map_err(|error| {
+                        CliError::Download(format!("invalid ZIP entry: {error}"))
+                    })?;
+                    // Raw entry access does not check that all declared compressed bytes exist.
+                    // Require their range to end before the central directory without decompressing.
+                    let data_end = entry
+                        .data_start()
+                        .and_then(|start| start.checked_add(entry.compressed_size()));
+                    if entry.enclosed_name().is_none()
+                        || entry.size() > MAX_DOWNLOAD_BYTES
+                        || data_end.is_none_or(|end| end > directory_start)
+                    {
+                        valid = false;
+                        break;
+                    }
+                }
+                valid
+            }
+        }
         _ => false,
     };
     if !valid {
@@ -1166,6 +1275,73 @@ fn temporary_path(output_dir: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zip_validation_accepts_a_complete_archive_and_rejects_truncated_or_unsafe_entries() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        for (name, valid) in [("song.m4a", true), ("../song.m4a", false)] {
+            let path = dir
+                .path()
+                .join(if valid { "valid.zip" } else { "unsafe.zip" });
+            let mut archive = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            archive
+                .start_file(
+                    name,
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Stored),
+                )
+                .unwrap();
+            archive.write_all(b"fixture audio").unwrap();
+            archive.finish().unwrap();
+            assert_eq!(
+                super::validate_downloaded_media(&path, "zip").is_ok(),
+                valid
+            );
+            let bytes = std::fs::read(&path).unwrap();
+            std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+            assert!(super::validate_downloaded_media(&path, "zip").is_err());
+        }
+    }
+
+    #[test]
+    fn zip_validation_rejects_entry_data_extending_into_directory_or_beyond_eof() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invalid-data-range.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        writer
+            .start_file(
+                "song.m4a",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+        let payload = b"fixture audio";
+        writer.write_all(payload).unwrap();
+        writer.finish().unwrap();
+        super::validate_downloaded_media(&path, "zip").unwrap();
+
+        let original = std::fs::read(&path).unwrap();
+        let archive = zip::ZipArchive::new(std::io::Cursor::new(&original)).unwrap();
+        let directory_start = archive.central_directory_start();
+        // The central-directory fixed header stores compressed size at byte 20.
+        let compressed_size_offset = directory_start as usize + 20;
+        for compressed_size in [payload.len() as u32 + 1, u32::MAX - 1] {
+            let mut malformed = original.clone();
+            malformed[compressed_size_offset..compressed_size_offset + 4]
+                .copy_from_slice(&compressed_size.to_le_bytes());
+
+            // Raw parsing accepts the intact directory/header without consuming the data.
+            let mut parsed = zip::ZipArchive::new(std::io::Cursor::new(&malformed)).unwrap();
+            let entry = parsed.by_index_raw(0).unwrap();
+            assert!(entry.data_start().unwrap() + entry.compressed_size() > directory_start);
+            std::fs::write(&path, &malformed).unwrap();
+            super::validate_downloaded_media(&path, "zip")
+                .expect_err("declared data must end before the central directory");
+        }
+    }
+
     use std::path::PathBuf;
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1175,9 +1351,9 @@ mod tests {
     use crate::core::CliError;
 
     use super::{
-        DOWNLOAD_IDLE_TIMEOUT, download_clip_url, download_filename, download_progress_bar,
-        preflight_clip_download, stage_clip_url, stage_clip_url_with_idle_timeout,
-        stage_clip_url_with_limits, validate_downloaded_media,
+        DOWNLOAD_IDLE_TIMEOUT, DownloadRedirects, download_clip_url, download_clip_url_direct,
+        download_filename, download_progress_bar, preflight_clip_download, stage_clip_url,
+        stage_clip_url_with_idle_timeout, stage_clip_url_with_limits, validate_downloaded_media,
     };
 
     fn clip() -> Clip {
@@ -1735,6 +1911,115 @@ mod tests {
         format!("http://{address}/track.mp3")
     }
 
+    async fn captured_media_request(stream: &mut tokio::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        loop {
+            let mut buffer = [0; 1024];
+            let count = stream.read(&mut buffer).await.expect("read media request");
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..count]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+            assert!(request.len() < 8192, "unexpectedly large request headers");
+        }
+        String::from_utf8(request).expect("request headers are UTF-8")
+    }
+
+    async fn observed_direct_media_server(
+        redirect: bool,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind direct media server");
+        let address = listener.local_addr().expect("direct media server address");
+        let task = tokio::spawn(async move {
+            let body = mp3_fixture();
+            let (mut stream, _) = listener.accept().await.expect("accept direct request");
+            let mut requests = vec![captured_media_request(&mut stream).await];
+            let status = if redirect { "302 Found" } else { "200 OK" };
+            let location = if redirect {
+                format!("Location: http://{address}/redirect-target.mp3\r\n")
+            } else {
+                String::new()
+            };
+            let headers = format!(
+                "HTTP/1.1 {status}\r\n{location}Content-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(headers.as_bytes())
+                .await
+                .expect("write headers");
+            // A redirect also carries valid media so status rejection, rather than
+            // media validation, must prevent it from being saved as a successful file.
+            let _ = stream.write_all(&body).await;
+            drop(stream);
+            if redirect
+                && let Ok(Ok((mut stream, _))) =
+                    tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept())
+                        .await
+            {
+                requests.push(captured_media_request(&mut stream).await);
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream
+                    .write_all(headers.as_bytes())
+                    .await
+                    .expect("write target headers");
+                let _ = stream.write_all(&body).await;
+            }
+            requests
+        });
+        (format!("http://{address}/track.mp3"), task)
+    }
+
+    #[tokio::test]
+    async fn direct_download_preserves_fixture_bytes_and_sends_no_account_credentials() {
+        let dir = tempfile::tempdir().expect("direct download directory");
+        let (url, requests) = observed_direct_media_server(false).await;
+        let path = download_clip_url_direct(
+            &clip(),
+            &dir.path().to_string_lossy(),
+            &url,
+            "mp3",
+            false,
+            true,
+        )
+        .await
+        .expect("direct fixture download");
+        assert_eq!(std::fs::read(path).unwrap(), mp3_fixture());
+        let requests = requests.await.expect("captured direct requests");
+        assert_eq!(requests.len(), 1);
+        let request = requests[0].to_ascii_lowercase();
+        assert!(request.starts_with("get /track.mp3 http/1.1\r\n"));
+        assert!(!request.contains("\r\nauthorization:"));
+        assert!(!request.contains("\r\ncookie:"));
+    }
+
+    #[tokio::test]
+    async fn direct_download_rejects_redirect_without_a_second_get_or_saved_file() {
+        let dir = tempfile::tempdir().expect("direct redirect directory");
+        let (url, requests) = observed_direct_media_server(true).await;
+        let error = download_clip_url_direct(
+            &clip(),
+            &dir.path().to_string_lossy(),
+            &url,
+            "mp3",
+            false,
+            true,
+        )
+        .await
+        .expect_err("direct downloads must reject redirects even with a valid media body");
+        assert!(matches!(error, CliError::Download(message) if message.contains("HTTP 302")));
+        assert_eq!(requests.await.expect("captured redirect requests").len(), 1);
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
     #[tokio::test]
     async fn download_creates_missing_output_directory() {
         let dir = test_dir("download-creates-dir");
@@ -1924,6 +2209,7 @@ mod tests {
             std::time::Duration::from_secs(1),
             std::time::Duration::from_secs(1),
             4,
+            DownloadRedirects::Follow,
         )
         .await
         .expect_err("content length above the limit must be rejected");
@@ -1952,6 +2238,7 @@ mod tests {
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
             1024,
+            DownloadRedirects::Follow,
         )
         .await
         .expect_err("the total deadline must bound a trickle download");

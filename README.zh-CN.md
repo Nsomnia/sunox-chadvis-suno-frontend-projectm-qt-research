@@ -22,7 +22,7 @@
 - 查询、搜索、编辑、公开、删除、恢复和下载歌曲。
 - 对已有歌曲做翻唱、续写、拼接、重制、变速、反转、裁剪、淡入淡出或 Pro 分轨。
 - 读取/下载已有分轨结果，管理歌词项目和 Custom Model，并从本地录音创建私有验证 Voice。
-- 生成并应用封面图，并查询已有歌曲视频状态；旧视频提交在 Clip 资格可证明前保持 fail-closed。
+- 生成并应用封面图，生成歌曲视频并轮询视频状态。
 - 管理歌单和 Persona，上传本地音频或封面。
 - 在终端里看表格，也可以给脚本或 Coding Agent 输出稳定的 JSON。
 
@@ -109,9 +109,15 @@ sunox clip wait <clip_id_1> <clip_id_2>
 sunox download <clip_id_1> <clip_id_2> --output ./songs
 ```
 
-不指定格式时，Sunox 会通过 Suno 官方 prepared-download 接口下载 MP3，并把普通歌词和
-时间轴歌词写入 ID3。用 `--format mp3|m4a|wav` 选择其他格式；WAV 优先走 prepared，明确不可用时才读取旧转换结果，缺失时可发起服务端转换。Suno 已停用 OPUS，`--format opus` 会在账户请求前拒绝。传 `--no-convert` 可禁止这个 POST；下载视频使用
-`--video`。prepared download 即使是 GET，也可能计入套餐下载额度。
+默认下载会复用歌曲视频，缺失/过期时生成视频，再无重编码提取原始音轨为 M4A。
+音频提取需要 FFmpeg 和 FFprobe；`--video` 保存原始 MP4，`--read-only` 禁止创建新视频。
+已有视频任务会续等，状态查询失败或视频下载失败都不会转去消耗额度的官方路径。
+
+只有显式指定 `--source official` 才走官方 prepared-download 导出，可用
+`--format mp3|m4a|wav` 选择音频格式；官方默认 MP3 会写入普通歌词和时间轴歌词 ID3。
+WAV 优先 prepared，明确不可用时才读取旧转换结果；缺失转换可用 `--no-convert` 禁止 POST。
+Suno 已停用 OPUS，`--format opus` 会在账户请求前拒绝。官方导出即使是 GET，也可能计入
+套餐下载额度。已有分轨导出和 ZIP 导出仍是独立的官方导出功能，也可能消耗额度。
 
 下载内容必须非空且通过基本媒体容器检查，才会替换目标文件。HTTP 200 错误页或截断的文件头
 会导致下载失败，即使使用 `--force` 也会保留原文件。Opus 会检查全部 Ogg 页，并要求完整的
@@ -154,7 +160,7 @@ sunox clip stems <id> --mode split --stem vocals
 sunox clip get-stems <id>          只读已有分轨结果，不启动拆分
 sunox clip generate-image <id> --prompt "..."
                                      生成并应用封面图
-sunox clip generate-video <id>     校验旧视频资格（当前提交 fail-closed）
+sunox clip generate-video <id>     生成歌曲视频并等待视频地址
 sunox clip video-status <id>       只读视频任务状态
 sunox clip cover-art models        查看当前图片/视频模型类别与允许时长
 sunox clip cover-art image <id> --prompt "..."
@@ -236,8 +242,8 @@ Lyrics 2.0 的选区重写、双源 mashup 轮询、歌词项目 CRUD/flush，�
 `underpaint` / `overpaint` condition。这些操作可能消耗 credits，最终资格与计费仍由服务端决定。
 
 Custom Model 训练至少需要 6 个不同源 Clip ID、`--confirm-rights`、账号实时可见的
-`custom_models` entitlement，以及 `--confirm-ui-available`：后者只能在当前 Suno Web 账号确实能看到
-训练 UI 后显式传入。缺少该 UI 确认时，CLI 不会发送训练 POST。当前 Web 显示 100 credits，最终资格与
+`custom_models` entitlement、启用的 `custom-model-ui` 会话开关，以及当前接口返回的可用训练基座。
+使用 `models custom bases` 查看，`--base-model` 选择；省略时使用当前明确的默认基座。旧 UI 确认参数不能覆盖服务端开关。当前 Web 显示 100 credits，最终资格与
 计费仍以服务端为准。pending 查询、精确 ID archive 和已就绪模型选择也可用；已就绪模型会出现在
 `sunox models`，可传给 `create --model`。archive 不代表永久删除或承诺可恢复。
 
@@ -245,9 +251,9 @@ Custom Model 训练至少需要 6 个不同源 Clip ID、`--confirm-rights`、�
 命名空间实现新版多结果 `SONG_COVER_ART` 图片/视频工作流，包括动态模型/时长、费用预检、
 pending/history 恢复、bounded polling 和显式 apply。生成不会自动应用第一个结果。两条路径都要求
 JWT 账号与 Clip owner 精确一致、明确未删除，并且 `generate_cover_art` action 可用。
-旧逐 Clip 视频 POST/status 是另一套独立协议；路由虽已确认，
-但精确的 ownership/download eligibility seam 尚未确认，因此 `clip generate-video` 会在 POST 前
-fail-closed；`clip video-status` 保留为 bounded 只读状态查询。
+`clip generate-video` 是独立的逐歌曲视频流程：校验 `generate_song_video` 账号能力、精确所有权、
+歌曲完成且未删除，以及当前下载限制后，提交一次无 body 的 POST 并轮询到可用视频地址。
+生成命令不会自动授权或下载视频；`clip video-status` 用于有界只读查询与恢复，结果不明时不得重新提交。
 
 Cowrite 歌词模型会在运行时从 Suno 查询。可用
 `sunox lyrics --prompt "..." --model <模型>` 按 ID 或展示名选择模型；只有模型声明支持时
@@ -444,16 +450,43 @@ sunox config set challenge_browser auto
 请先检查这些资源。检查点只保存允许的标识符，不保存凭证或提示词，也不支持自动续跑。
 命令成功后会删除对应的操作检查点。
 
-全局 `--read-only` 会在第一次写请求前拒绝账号写操作。它仍允许账号读取和 prepared download
-（后者可能计入下载额度），并禁止时间轴歌词补生成及缺失 WAV 的服务端转换；若结果已存在，
-仍可只读返回。
+全局 `--read-only` 会在第一次写请求前拒绝账号写操作。官方下载只允许源歌曲已经明确
+`is_download_unlocked=true`，不会提交下载授权、时间轴歌词补生成或缺失 WAV 转换。
+
+显式选择 CDN 路径时，只保存接口实际返回的明文 M4A/MP3：
+
+```bash
+sunox download <clip_id> --source cdn --read-only --output ./songs
+```
+
+不指定格式时优先保存已有 M4A，其次 MP3；显式 `--format` 必须已有对应格式，不做转换。
+该路径不调用下载授权、准备、转换或歌词生成接口，也不会失败后转到官方下载。带有
+`media_urls[].encoding` 的加密资源会明确拒绝，`playback_url` 也不会再把它作为普通音频链接。
+当前账号可能只有加密播放资源，因此不能将 CDN 模式视为普遍可用的免额度下载保证。
+
+默认下载走视频来源，使用 FFprobe 检查品质，并用 FFmpeg 无重编码提取 M4A：
+
+```bash
+sunox download <clip_id> --source video --read-only --output ./songs
+sunox download <clip_id> --video-timeout 180 --output ./songs
+sunox download <clip_id> --source video --video --read-only --output ./videos
+```
+
+优先复用现成视频，缺失/过期时自动生成；`--read-only` 禁止生成。`--generate-video` 保留兼容。所有依赖、输出文件先于
+生成检查。此来源不调用下载授权，不回退官方下载。JSON 返回实际编码、码率、采样率、声道及
+视频尺寸；失败保留已生成视频 ID。歌曲地址尚未同步时会检查视频状态，复用已完成地址或续等
+已有任务；超时重跑也不重复提交已有任务，状态查询失败不会触发生成。视频提取保留其原始音轨，
+不能提升为更高音质的 WAV/MP3。
+详见[接入设计与品质边界](VIDEO_DOWNLOAD.md)。
+
+
 
 部分命令会消耗 Credits 或修改远端资源。新建的歌曲、歌单和 Persona 默认保持私有，只有
 显式执行公开命令才会改变可见性；不可恢复的操作必须传入 `-y` 或 `--yes`。
 
 [Suno 已公告](https://about.suno.com/blog/suno-updates-tos)自 2026 年 9 月 3 日起，Pro 每月最多
-下载 20 首、Premier 每月 60 首；Premier 的 Studio 导出不受此限制。Sunox 使用官方
-prepared-download 流程，不绕过套餐计数。CLI 只展示
+下载 20 首、Premier 每月 60 首；Premier 的 Studio 导出不受此限制。只有显式指定 `--source official` 才使用官方
+prepared-download 流程；同一首歌重复下载、换格式共用一次解锁。CDN 模式只支持已有明文链接。CLI 只展示
 实时 billing 响应实际返回的额度字段，不臆测剩余下载次数。
 
 ## 开发
@@ -469,3 +502,27 @@ cargo test --locked
 ## 许可证
 
 [MIT](LICENSE)
+
+
+## Speech、新版 Simple、Sounds 与 Albums
+
+```sh
+sunox models custom bases --json
+sunox speech --script "晚安，今天的故事从这里开始。" --tone "温柔讲述，轻柔钢琴背景"
+sunox simple "围绕参考音频创作轻柔的原声歌曲" --audio-ref CLIP_ID
+sunox simple "根据图片里的场景创作音乐" --image-file scene.png
+sunox sounds "温暖的贝斯循环" --loop --bpm 100 --key "C minor"
+sunox album list --json
+sunox album create --name "我的专辑" --type lp --from-playlist PLAYLIST_ID
+sunox album add ALBUM_ID CLIP_ID
+sunox album publish ALBUM_ID
+sunox download-zip CLIP_1 CLIP_2 --format m4a --output ./songs
+```
+
+新生成入口沿用账户串行锁、Browser Bridge、单次写入和恢复记录。生成后先用 `clip wait` 等待完成。
+Speech 支持 Script 和 Describe；Simple 支持音频、图片、歌词和风格附件，按实时账户限额校验。
+视频/MIDI 附件尚待单独验证。专辑默认创建为私有草稿，发布是独立操作，可能公开歌曲并通知关注者。
+ZIP 仅支持 M4A/MP3，按当前网页流程携带 batch ID 提交一次准备请求，不额外逐首授权。
+结果保留 `failed_clips`、`substituted_clips` 并警告跳过歌曲和格式替换；校验结构后原子保存。
+准备请求可能消耗下载额度，结果不明时不自动重试。
+共享 Custom Model 的列表查询和本人模型重命名已实现，共享模型生成及权限授予尚未接入。

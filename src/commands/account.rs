@@ -148,12 +148,25 @@ fn capability_report(info: &BillingInfo, session: Option<&SessionInfo>) -> Value
         "downloads": {
             "usage": safe_download_usage_value(info.download_usage.as_ref()),
             "credit_packs": safe_download_credit_packs_value(info.download_credit_packs.as_deref()),
+            "sources": {
+                "official": "explicit --source official only; prepared exports with source unlock/authorization accounting",
+                "cdn": "existing exact plaintext audio URL; no export authorization",
+                "video": {
+                    "command": "download",
+                    "is_default": true,
+                    "audio_format": "m4a",
+                    "video_format": "mp4",
+                    "generation": "reuse existing video or poll an existing job; check status before generating missing/stale video unless --read-only",
+                    "runtime_tools": "FFprobe; FFmpeg also required for audio extraction",
+                    "quality": "original source stream; no transcoding; actual metadata reported in source_media/output_media"
+                }
+            },
         },
         "protocol_safety": {
-            "read_only_mode": "Pass --read-only to reject account-write commands before their first write request. Downloads then require is_download_unlocked=true and never send authorization.",
+            "read_only_mode": "Pass --read-only to reject account-write commands before their first write request. Official downloads then require is_download_unlocked=true and never send authorization. Explicit CDN/video sources can reuse available unencrypted URLs; default video creation is blocked by --read-only.",
             "model_selection": "Generation selectors are resolved against current billing data by display name, external key, or account model id; unusable and ambiguous matches fail closed.",
             "remaster": "The plan feature, selected remaster model, source clip state, and source action_config are checked before submission.",
-            "downloads": "Only is_download_unlocked=true skips the one-shot authorization POST. MP3/M4A/WAV/mp4 are prepared-first; Stems authorize their parent once. Authorization and download may be plan-metered.",
+            "downloads": "For official exports, only is_download_unlocked=true skips the one-shot authorization POST. MP3/M4A/WAV/mp4 are prepared-first; Stems authorize their parent once. CDN/video sources do not send that POST; default video downloads render missing/stale videos unless --read-only. Accounting remains controlled by Suno. Authorization and download may be plan-metered.",
             "audio_conversion": "Prepared WAV is attempted first. Legacy WAV conversion is a separate POST after source unlock and can be forbidden with --no-convert.",
             "ambiguous_writes": "A lost or unusable response after download authorization, generation, Remaster, conversion, Voice creation, Custom Model training/archive, a lyrics-project write, visual generation, or another submitted edit is reported with recovery evidence; it must not be blindly retried.",
         }
@@ -232,6 +245,34 @@ fn feature_rows(info: &BillingInfo, session: Option<&SessionInfo>) -> Vec<Featur
             .insert("session.flags");
     }
 
+    if let Some(session) = session {
+        for flag in [
+            "agentic-simple",
+            "create-sounds",
+            "multi-select-download-zip",
+            "can-create-album",
+            "can-publish-album",
+            "custom-model-ui",
+            "custom-model-v6-cutover",
+        ] {
+            if session.flags.contains_key(flag) {
+                features
+                    .entry(flag.into())
+                    .or_default()
+                    .insert("session.flags");
+            }
+        }
+    }
+    if info
+        .models
+        .iter()
+        .any(|model| model.external_key == "chirp-goose" && model.can_use)
+    {
+        features
+            .entry("speech".into())
+            .or_default()
+            .insert("models");
+    }
     features
         .into_iter()
         .map(|(name, sources)| {
@@ -250,7 +291,9 @@ fn feature_rows(info: &BillingInfo, session: Option<&SessionInfo>) -> Vec<Featur
                         .to_owned(),
                 );
             }
-            let coverage = if name == "aug_creativity" {
+            let coverage = if matches!(name.as_str(),"agentic-simple"|"create-sounds"|"multi-select-download-zip"|"can-create-album"|"can-publish-album"|"custom-model-ui"|"custom-model-v6-cutover") && !session.is_some_and(|session|session.flag_enabled(&name)) {
+                FeatureCoverage {status:"unavailable",commands:&[],note:"The current session has not enabled this Web gate; the CLI will not override it."}
+            } else if name == "aug_creativity" {
                 if session.is_some_and(|session| session.flag_enabled("aug-creativity")) {
                     FeatureCoverage {
                         status: "supported",
@@ -350,6 +393,47 @@ struct FeatureCoverage {
 
 fn feature_coverage(name: &str) -> FeatureCoverage {
     let (status, commands, note): (&str, &[&str], &str) = match name {
+        "agentic-simple" => (
+            "implemented",
+            &["simple"],
+            "Current Agentic Simple task with exact audio references and moderated image uploads; real-time atom/image/audio limits are enforced. Video and MIDI attachments remain unavailable until their upload gates and contracts are verified.",
+        ),
+        "multi-select-download-zip" => (
+            "implemented",
+            &["download-zip"],
+            "M4A/MP3 batch preparation with live gate, no individual authorization, and partial/substitution warnings.",
+        ),
+        "create-sounds" => (
+            "implemented",
+            &["sounds"],
+            "One-shot and loop sound generation, with current session and paid-plan checks.",
+        ),
+        "can-create-album" => (
+            "implemented",
+            &[
+                "album list",
+                "album info",
+                "album create",
+                "album set",
+                "album add",
+            ],
+            "Albums use distinct draft/type semantics on Playlist storage; writes require exact ownership.",
+        ),
+        "can-publish-album" => (
+            "implemented",
+            &["album publish"],
+            "Explicit publication confirms the album and published clip visibility; it can notify followers.",
+        ),
+        "custom-model-ui" | "custom-model-v6-cutover" => (
+            "implemented",
+            &["models custom bases", "models custom train --base-model"],
+            "Training uses current session gates and advertised usable base models; rights confirmation remains required.",
+        ),
+        "speech" => (
+            "implemented",
+            &["speech"],
+            "Script and Describe use the current chirp-goose Speech builder. This row establishes model availability, not a separate Speech entitlement; the server remains authoritative.",
+        ),
         "v4" | "auk" => (
             "supported",
             &["create --model"],
@@ -448,7 +532,7 @@ fn feature_coverage(name: &str) -> FeatureCoverage {
         "custom_models" => (
             "partial",
             &["create --model", "models", "models custom"],
-            "Ready-model selection, pending inspection, exact-ID archive, and training are implemented. Training requires --confirm-rights, 6 to 100 distinct eligible source clips, a 1-to-16-character name, the live custom_models entitlement, and --confirm-ui-available after visibly confirming the current Suno Web training UI; without either attestation the CLI sends no training POST, and the server remains authoritative.",
+            "Ready-model selection, base discovery/selection, pending/shared inspection, owned-model rename, archive and training are implemented. Training requires --confirm-rights, 6..100 eligible clips, a 1..16 character name, live entitlement, custom-model-ui and one usable advertised training base. Shared model generation and access-grant writes remain unverified.",
         ),
         "commercial_rights" => (
             "account_only",
@@ -475,9 +559,11 @@ fn feature_coverage(name: &str) -> FeatureCoverage {
                 "clip cover-art video",
                 "clip cover-art status",
                 "clip cover-art apply-video",
+                "clip generate-video",
+                "download --source video --generate-video",
                 "clip video-status",
             ],
-            "The current multi-result cover-video batch workflow is implemented. The separate legacy per-clip submit remains fail-closed; its status read is retained.",
+            "Both the multi-result cover-video batch workflow and per-clip song-video generation are implemented. Song-video submits once after exact ownership, plan-feature and download-eligibility checks, then polls without authorizing a download.",
         ),
         _ => (
             "unknown",
@@ -688,6 +774,26 @@ fn is_sensitive_metric_key(key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn new_capability_rows_report_only_known_live_gates_and_distinguish_disabled_flags() {
+        let info = billing_fixture();
+        let session:SessionInfo=serde_json::from_value(serde_json::json!({"flags":{"agentic-simple":true,"create-sounds":false,"can-create-album":true,"can-publish-album":false,"custom-model-ui":true,"unknown-secret":"must-not-leak"}})).unwrap();
+        let report = capability_report(&info, Some(&session));
+        let rows = report["features"].as_array().unwrap();
+        for (name, status) in [
+            ("agentic-simple", "implemented"),
+            ("create-sounds", "unavailable"),
+            ("can-create-album", "implemented"),
+            ("can-publish-album", "unavailable"),
+            ("custom-model-ui", "implemented"),
+        ] {
+            let row = rows.iter().find(|row| row["name"] == name).unwrap();
+            assert_eq!(row["cli_status"], status);
+        }
+        assert!(!report.to_string().contains("must-not-leak"));
+        assert!(!rows.iter().any(|row| row["name"] == "speech"));
+    }
+
     use super::{capability_report, feature_rows, safe_account_limits};
     use crate::api::types::{BillingInfo, SessionInfo};
 

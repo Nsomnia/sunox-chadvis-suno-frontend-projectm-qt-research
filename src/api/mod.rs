@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+pub mod album;
 pub mod billing;
 pub mod challenge;
 pub mod clip_info;
@@ -10,6 +11,7 @@ pub mod cover;
 pub mod custom_model;
 pub mod delete;
 pub mod download;
+pub mod download_zip;
 pub mod edit;
 pub mod extend;
 pub mod feed;

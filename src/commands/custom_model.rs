@@ -9,6 +9,36 @@ use crate::output::{self, OutputFormat};
 
 pub async fn run(args: CustomModelsArgs, ctx: &AppContext) -> Result<(), CliError> {
     match args.command {
+        CustomModelCommand::Bases => {
+            let data = ctx.client().await?.custom_model_bases().await?;
+            match ctx.fmt {
+                OutputFormat::Json => output::json::success(data),
+                OutputFormat::Table => {
+                    for base in data.options {
+                        println!(
+                            "{}\t{}\tdefault={}",
+                            base.base_model, base.name, base.is_default
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        CustomModelCommand::Shared { cursor } => {
+            let data = ctx
+                .client()
+                .await?
+                .shared_custom_models(cursor.as_deref())
+                .await?;
+            output::json::success(data);
+            Ok(())
+        }
+        CustomModelCommand::Rename { id, name } => {
+            let (client, _guard) = ctx.mutation_client().await?;
+            client.rename_custom_model(&id, &name).await?;
+            output::json::success(json!({"model_id":id,"name":name}));
+            Ok(())
+        }
         CustomModelCommand::Pending => pending(ctx).await,
         CustomModelCommand::Train(args) => {
             let confirm_ui_available = args.confirm_ui_available;
@@ -21,12 +51,17 @@ pub async fn run(args: CustomModelsArgs, ctx: &AppContext) -> Result<(), CliErro
             let (client, _mutation_guard) = ctx.mutation_client().await?;
             if !ctx.quiet {
                 eprintln!(
-                    "Custom Model training currently costs 100 credits; validating the live account entitlement and {} source clips after the explicit Web-UI attestation...",
+                    "Custom Model training currently costs 100 credits; validating the live account entitlement and {} source clips with the current training base and session gate...",
                     clip_ids.len()
                 );
             }
             let model = client
-                .create_custom_model(&clip_ids, &name, confirm_ui_available)
+                .create_custom_model(
+                    &clip_ids,
+                    &name,
+                    confirm_ui_available,
+                    args.base_model.as_deref(),
+                )
                 .await?;
             match ctx.fmt {
                 OutputFormat::Json => output::json::success(model),
@@ -74,17 +109,11 @@ fn validate_training(
     clip_ids: Vec<String>,
     name: &str,
     confirm_rights: bool,
-    confirm_ui_available: bool,
+    _confirm_ui_available: bool,
 ) -> Result<(Vec<String>, String), CliError> {
     if !confirm_rights {
         return Err(CliError::Config(
             "Custom Model training requires --confirm-rights to affirm ownership of every source clip"
-                .into(),
-        ));
-    }
-    if !confirm_ui_available {
-        return Err(CliError::Config(
-            "Custom Model training requires --confirm-ui-available to confirm that the current Suno Web account visibly exposes its training UI"
                 .into(),
         ));
     }
@@ -133,7 +162,7 @@ mod tests {
     use super::validate_training;
 
     #[test]
-    fn training_requires_six_unique_clips_and_both_explicit_confirmations() {
+    fn training_requires_six_unique_clips_and_rights_confirmation() {
         let six = (1..=6).map(|index| format!("clip-{index}")).collect();
         validate_training(six, "My Sound", true, true).expect("valid training request");
 
@@ -144,7 +173,7 @@ mod tests {
         assert!(validate_training(six, "My Sound", false, true).is_err());
 
         let six = (1..=6).map(|index| format!("clip-{index}")).collect();
-        assert!(validate_training(six, "My Sound", true, false).is_err());
+        assert!(validate_training(six, "My Sound", true, false).is_ok());
 
         let six = (1..=6).map(|index| format!("clip-{index}")).collect();
         assert!(validate_training(six, &"名".repeat(17), true, true).is_err());

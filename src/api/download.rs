@@ -17,6 +17,22 @@ pub enum DownloadFormat {
     Opus,
 }
 
+/// Formats currently offered by Suno's bulk-download UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum DownloadZipFormat {
+    Mp3,
+    M4a,
+}
+
+impl DownloadZipFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Mp3 => "mp3",
+            Self::M4a => "m4a",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PreparedDownloadFormat {
     Mp3,

@@ -7,6 +7,28 @@ use serde_json::Value;
 pub struct CreateCustomModelRequest<'a> {
     pub clip_ids: &'a [String],
     pub name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_model: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CustomModelBases {
+    pub options: Vec<CustomModelBase>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CustomModelBase {
+    pub base_model: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SharedCustomModels {
+    pub items: Vec<Value>,
+    pub generation_config: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

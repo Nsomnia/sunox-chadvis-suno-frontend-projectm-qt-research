@@ -31,14 +31,15 @@ pub use clip_info::{
 };
 pub use clip_mutation::{ClipReaction, ClipTrashRequest, SetClipReactionRequest};
 pub use custom_model::{
-    ArchiveCustomModelRequest, CreateCustomModelRequest, CustomModelCreateResponse,
-    PendingCustomModelsResponse,
+    ArchiveCustomModelRequest, CreateCustomModelRequest, CustomModelBases,
+    CustomModelCreateResponse, PendingCustomModelsResponse, SharedCustomModels,
 };
 pub(crate) use download::DownloadAuthorizationRequest;
 pub use download::DownloadAuthorizationResponse;
 pub use feed::{FeedFilters, FeedResponse, FeedV3Request};
 pub use generation::{
-    ControlSliders, GenerateRequest, GenerateResponse, GenerationResult, LastTagsGeneration,
+    AudioReference, ControlSliders, GenerateRequest, GenerateResponse, GenerationResult,
+    LastTagsGeneration,
 };
 pub use lyrics::{AlignedWord, CowriteLyricsModel, CowriteLyricsResponse};
 pub use lyrics_editor::{

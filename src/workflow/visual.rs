@@ -576,11 +576,7 @@ pub async fn generate_video_and_wait(
 ) -> Result<VideoGenerationStatus, CliError> {
     polling.validate()?;
     let source = validate_visual_source(client, clip_id, VIDEO_FEATURE, None).await?;
-    if !legacy_video_submit_eligibility_is_proven(&source) {
-        return Err(CliError::Config(format!(
-            "the legacy video POST/status contract is confirmed for clip {clip_id}, but no current response seam proves both clip ownership and download eligibility; refusing to submit generation. Use `sunox clip video-status {clip_id}` for read-only inspection"
-        )));
-    }
+    ensure_song_video_download_eligible(client, &source).await?;
     let operation_id = client.start_video_generation(clip_id).await?;
     wait_for_video(client, clip_id, polling, Some(&operation_id)).await
 }
@@ -594,12 +590,39 @@ pub async fn wait_for_existing_video(
     wait_for_video(client, clip_id, polling, None).await
 }
 
-fn legacy_video_submit_eligibility_is_proven(_source: &Clip) -> bool {
-    // The old video manager proves the POST and status routes, but the current
-    // bundle does not expose a clip action or ownership predicate that the CLI
-    // can reproduce exactly. Do not guess an action name or interpret opaque
-    // ownership fields as authorization.
-    false
+async fn ensure_song_video_download_eligible(
+    client: &SunoClient,
+    source: &Clip,
+) -> Result<(), CliError> {
+    // Current Web checks isDownloadDisabled before offering generation. Ownership,
+    // completed state, non-trash and plan entitlement are checked by our common preflight.
+    let reason = match source.extra.get("download_disabled_reason") {
+        None | Some(serde_json::Value::Null) => return Ok(()),
+        Some(serde_json::Value::String(reason)) if reason.is_empty() => return Ok(()),
+        Some(serde_json::Value::String(reason)) => reason,
+        _ => {
+            return Err(CliError::Api {
+                code: "schema_drift",
+                message: "song-video source has an unknown download_disabled_reason shape".into(),
+            });
+        }
+    };
+    // Web only overrides the remix-contest restriction when this flag is exactly false.
+    if reason == "remix_contest"
+        && client
+            .session_info()
+            .await?
+            .flags
+            .get("remix-contest-disable-downloads")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+    {
+        return Ok(());
+    }
+    Err(CliError::Config(format!(
+        "clip {} is not eligible for song-video generation: download disabled ({reason})",
+        source.id
+    )))
 }
 
 async fn validate_visual_source(

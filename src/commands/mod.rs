@@ -2,6 +2,7 @@
 
 pub mod account;
 pub mod agent;
+pub mod album;
 pub mod auth;
 pub mod browser_extension;
 pub mod config;
@@ -16,6 +17,7 @@ pub mod persona;
 pub mod playlist;
 pub mod stems;
 pub mod update;
+mod video_download;
 pub mod visual;
 pub mod voice;
 pub mod wait;

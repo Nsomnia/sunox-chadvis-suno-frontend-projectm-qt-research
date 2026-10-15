@@ -79,6 +79,18 @@ pub fn download_client() -> Result<Client, CliError> {
         .map_err(|e| CliError::Config(format!("HTTP client: {e}")))
 }
 
+/// Direct CDN downloads must not follow a media URL to an API or another host.
+/// This client has no account headers, cookies, or automatic redirect requests.
+pub fn download_no_redirect_client() -> Result<Client, CliError> {
+    crate::net::proxy::apply_to_client_builder(
+        Client::builder()
+            .connect_timeout(REQUEST_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none()),
+    )?
+    .build()
+    .map_err(|e| CliError::Config(format!("non-redirecting download client: {e}")))
+}
+
 /// Presigned uploads can be much larger than API payloads. Keep connection,
 /// idle-read, and total deadlines explicit without inheriting the API's 30s
 /// total timeout.
